@@ -135,14 +135,21 @@ cvdigitize grid "data\in\paper.pdf" --page 1
 
 # 5) RASTER/scanned figure: list the plot panels cvdigitize can see
 cvdigitize extract "data\in\paper.pdf" --page 5
-#   -> prints how many panels were found, a numbered preview PNG, and the
-#      exact next command to run (see below) — tick pixel positions are
-#      already auto-detected, you only supply the two outermost tick VALUES
+#   -> prints how many panels were found, a numbered preview PNG, and — for each
+#      panel — calib_helper_panelN.png: zoomed crops of the four outermost tick
+#      LABELS so you can just read off the numbers. Tick pixel positions are
+#      auto-detected; you only supply the two outermost tick VALUES per axis.
 
 # 6) RASTER, calibrated (note the `=`, needed so the shell doesn't treat
-#    a leading "-0.8" as another flag)
+#    a leading "-0.8" as another flag). Numbers come straight off the helper crops.
 cvdigitize extract "data\in\paper.pdf" --page 5 --raster-panel 1 `
     --x-ticks="-0.8,0.2" --y-ticks="25,-50" --x-unit "V vs Ag/AgCl" --y-unit "uA"
+
+# 7) SURVEY a whole folder of PDFs at once -> gallery sorted by CV-likeness
+cvdigitize batch "data\corpus"
+#   -> data\out\_batch\index.html : one card per paper (figure type, candidate
+#      curves, loop-score confidence). Great for triaging many papers fast.
+#      Recreate the sample corpus with: python scripts\fetch_corpus.py
 ```
 
 (`cvdigitize` above = `cvdigitize.bat` / `.\cvdigitize.ps1`, or
