@@ -136,13 +136,24 @@ def _round_rgb(rgb, ndigits: int = 3) -> tuple[float, float, float]:
     return tuple(round(float(c), ndigits) for c in rgb)
 
 
+def is_light_gray(rgb: tuple[float, float, float]) -> bool:
+    """True for pale/grey strokes (grid lines, frames) — not curve colours.
+
+    Keeps black (0,0,0) and any saturated colour; drops light near-neutral
+    greys where every channel is high and close together.
+    """
+    lo, hi = min(rgb), max(rgb)
+    return lo > 0.6 and (hi - lo) < 0.15
+
+
 def extract_color_groups(
     pdf_path: str,
     page_number: int,
     *,
-    min_points: int = 20,
+    min_points: int = 50,
     clip: tuple[float, float, float, float] | None = None,
     bezier_samples: int = 12,
+    drop_light: bool = True,
 ) -> list[CurveGroup]:
     """Extract stroked curves from ``page_number`` grouped by stroke colour.
 
@@ -151,6 +162,7 @@ def extract_color_groups(
     min_points : drop colour groups thinner than this (kills stray marks).
     clip : optional (x0, y0, x1, y1) in PDF points; keep only polylines whose
         centroid falls inside it (used to drop legends/axis labels).
+    drop_light : skip pale grey strokes (grid lines / frames).
     """
     doc = fitz.open(pdf_path)
     page = doc[page_number]
@@ -161,6 +173,8 @@ def extract_color_groups(
         if color is None:  # unstroked (fill-only) element -> skip
             continue
         rgb = _round_rgb(color)
+        if drop_light and is_light_gray(rgb):
+            continue
         polylines = _items_to_polylines(d["items"], bezier_samples)
         if clip is not None:
             x0, y0, x1, y1 = clip
@@ -269,15 +283,14 @@ def panel_label(col: int, row: int, nx: int) -> str:
 
 
 def find_figure_pages(pdf_path: str, *, min_colors: int = 2,
-                      min_points: int = 200) -> list[int]:
+                      min_points: int = 60) -> list[int]:
     """Heuristic: pages that carry several multi-colour vector curves."""
     doc = fitz.open(pdf_path)
     pages: list[int] = []
     for pno in range(doc.page_count):
-        groups = extract_color_groups(pdf_path, pno, min_points=50)
+        groups = extract_color_groups(pdf_path, pno, min_points=min_points)
         colored = [g for g in groups if g.name != "black"]
-        big = [g for g in groups if g.n_points >= min_points]
-        if len(colored) >= min_colors and big:
+        if len(colored) >= min_colors and groups:
             pages.append(pno)
     doc.close()
     return pages

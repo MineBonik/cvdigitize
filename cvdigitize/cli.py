@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 from .ingest import classify_pdf, render_page
 from .vector_extract import (extract_color_groups, extract_panels,
                              find_figure_pages, panel_label)
-from .postprocess import order_curve, dedupe, resample_arclength
+from .postprocess import order_curve, dedupe, resample_arclength, keep_main_components
 from .calibrate import Calibration
 from .package import write_datapackage, CurveMeta
 
@@ -85,7 +85,7 @@ def _process_curves(curves, calib, resample_n):
     """order -> (calibrate) -> resample each curve; return list of dicts."""
     out = []
     for cg in curves:
-        loop = dedupe(order_curve(cg.polylines))
+        loop = dedupe(order_curve(keep_main_components(cg.polylines)))
         if calib is not None:
             data = calib.apply(loop)
             xlab, ylab = calib.x_label, calib.y_label
@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--panel", default=None, help="single panel letter a,b,c,... (default all)")
     pe.add_argument("--calibration", default=None, help="calibration JSON for real units")
     pe.add_argument("--resample", type=int, default=1000, help="arc-length points (0=off)")
-    pe.add_argument("--min-points", type=int, default=200, help="min points per curve")
+    pe.add_argument("--min-points", type=int, default=60, help="min points per curve")
     pe.add_argument("--figure", default=None, help="figure label for metadata")
     pe.add_argument("--scan-rate", default=None, help="e.g. '50 mV/s'")
     pe.add_argument("--no-yaml", action="store_true", help="skip YAML metadata")
