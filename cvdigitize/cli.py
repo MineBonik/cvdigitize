@@ -53,7 +53,8 @@ from .postprocess import (order_curve, dedupe, resample_arclength,
                           keep_main_components, loop_metrics)
 from .calibrate import Calibration, calibration_from_anchors
 from .package import write_datapackage, write_csv, CurveMeta
-from .raster_extract import find_image_regions, extract_all_panel_curves
+from .raster_extract import (find_image_regions, extract_all_panel_curves,
+                             crop_tick_labels)
 
 
 # --------------------------------------------------------------------------- #
@@ -257,12 +258,36 @@ def _extract_raster(args, pdf, page, stem, out_dir):
         preview = os.path.join(rdir, f"raster_panels_p{page}.png")
         fig.savefig(preview, dpi=100); plt.close(fig)
 
+        # calibration helper: zoomed crops of the outermost tick labels so the
+        # user can read the two numbers per axis without hunting the figure.
+        for i, r in enumerate(results):
+            crops = crop_tick_labels(r["image"], r["frame_px"], r["ticks"])
+            if not crops:
+                continue
+            # Label by position in the --x-ticks/--y-ticks pair (not geometry):
+            # ticks come in detection order, so the crop at index 0 is the 1st
+            # value the user types, index -1 the 2nd — unambiguous regardless of
+            # which way the axis runs.
+            order = [("x_lo", "--x-ticks 1st value"), ("x_hi", "--x-ticks 2nd value"),
+                     ("y_lo", "--y-ticks 1st value"), ("y_hi", "--y-ticks 2nd value")]
+            avail = [(k, lbl) for k, lbl in order if k in crops]
+            fig, axs = plt.subplots(1, len(avail), figsize=(2.6 * len(avail), 2.2))
+            axs = np.atleast_1d(axs)
+            for ax, (k, lbl) in zip(axs, avail):
+                ax.imshow(crops[k]); ax.set_title(lbl, fontsize=9); ax.axis("off")
+            fig.suptitle(f"panel [{i}] — read these into --x-ticks/--y-ticks", fontsize=10)
+            fig.tight_layout()
+            fig.savefig(os.path.join(rdir, f"calib_helper_panel{i}.png"), dpi=120)
+            plt.close(fig)
+
         print(f"Found {len(results)} plot panels on page {page} (composite raster figure).")
         print(f"Preview with panel numbers: {preview}\n")
         for i, r in enumerate(results):
             xt, yt = r["ticks"]["x_ticks"], r["ticks"]["y_ticks"]
             print(f"  [{i}] {len(r['polyline'])} curve points, "
-                  f"{len(xt)} x-ticks / {len(yt)} y-ticks auto-detected")
+                  f"{len(xt)} x-ticks / {len(yt)} y-ticks auto-detected"
+                  + (f"  (see calib_helper_panel{i}.png for the tick numbers)"
+                     if (xt and yt) else ""))
         print(f'\nPick one and (optionally) calibrate, e.g.:\n'
               f'  python -m cvdigitize extract "{pdf}" --page {page} --raster-panel 0 '
               f'--x-ticks -0.8,0.2 --y-ticks 25,-50 --x-unit "V" --y-unit "uA"\n'
