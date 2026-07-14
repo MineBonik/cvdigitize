@@ -1,19 +1,38 @@
 """Command-line interface for cvdigitize.
 
+Quickest start — just point it at a PDF, no subcommand needed:
+    cvdigitize paper.pdf
+
+That auto-picks a page, extracts whatever curves it can, and writes a
+normalised CSV + an HTML report you can open and look at immediately. Add
+calibration once you know what you're looking at (see below).
+
 Examples
 --------
-    # inspect a PDF: which pages hold vector CV figures?
-    python -m cvdigitize info paper.pdf
+    # inspect a PDF: which pages hold vector CV figures / rasterized figures?
+    cvdigitize info paper.pdf
 
     # extract curves from the auto-detected figure page (whole figure)
-    python -m cvdigitize extract paper.pdf
+    cvdigitize extract paper.pdf
+    cvdigitize paper.pdf                     # same thing, shorthand
 
-    # multi-panel figure: split 2x2 and process panel (a) only, with calibration
-    python -m cvdigitize extract paper.pdf --panels 2x2 --panel a \\
+    # [vector figure] multi-panel: split 2x2, process panel (a), with calibration
+    cvdigitize extract paper.pdf --panels 2x2 --panel a \\
         --calibration configs/paper_fig1a.calib.json --scan-rate "50 mV/s"
 
-    # render a page with a pixel grid to read off axis-anchor pixels for calibration
-    python -m cvdigitize grid paper.pdf --page 1
+    # [raster/scanned figure] panels + tick values are auto-detected; you just
+    # supply the two outermost axis labels (note the =, needed for negative
+    # numbers so the shell doesn't mistake "-0.8" for another flag):
+    cvdigitize extract paper.pdf --raster-panel 0 \\
+        --x-ticks="-0.8,0.2" --y-ticks="25,-50" --x-unit "V" --y-unit "uA"
+
+    # render a page with a pixel grid to read off axis-anchor pixels
+    # (only needed for vector-figure calibration; raster ticks are automatic)
+    cvdigitize grid paper.pdf --page 1
+
+If you installed via the venv directly instead of the `cvdigitize` launcher,
+replace `cvdigitize` above with `.venv\\Scripts\\python.exe -m cvdigitize`
+(Windows) or `.venv/bin/python -m cvdigitize` (macOS/Linux).
 """
 from __future__ import annotations
 
@@ -31,8 +50,9 @@ from .ingest import classify_pdf, render_page
 from .vector_extract import (extract_color_groups, extract_panels,
                              find_figure_pages, panel_label)
 from .postprocess import order_curve, dedupe, resample_arclength, keep_main_components
-from .calibrate import Calibration
-from .package import write_datapackage, CurveMeta
+from .calibrate import Calibration, calibration_from_anchors
+from .package import write_datapackage, write_csv, CurveMeta
+from .raster_extract import find_image_regions, extract_all_panel_curves
 
 
 # --------------------------------------------------------------------------- #
@@ -44,6 +64,28 @@ def _parse_grid(s: str) -> tuple[int, int]:
 
 def _plot_color(rgb):
     return (max(0, min(1, rgb[0])), max(0, min(1, rgb[1])), max(0, min(1, rgb[2])))
+
+
+def _parse_two_floats(s: str) -> tuple[float, float]:
+    a, b = s.split(",")
+    return float(a), float(b)
+
+
+def _auto_page(pdf: str) -> tuple[int, str]:
+    """Pick a page to work on and report its kind, when ``--page`` is omitted.
+
+    Prefers a vector-curves page (higher fidelity, no calibration guesswork
+    needed for the split step); falls back to the first raster page with a
+    sizeable embedded image; else page 0.
+    """
+    figs = find_figure_pages(pdf)
+    if figs:
+        return figs[0], "vector-curves"
+    infos = classify_pdf(pdf)
+    for pi in infos:
+        if pi.kind == "raster":
+            return pi.number, "raster"
+    return 0, (infos[0].kind if infos else "sparse")
 
 
 def cmd_info(args):
@@ -158,10 +200,153 @@ code{{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}}
 def cmd_extract(args):
     pdf = args.pdf
     stem = os.path.splitext(os.path.basename(pdf))[0]
-    page = args.page if args.page is not None else (find_figure_pages(pdf) or [0])[0]
+    if args.page is not None:
+        page, kind = args.page, None
+    else:
+        page, kind = _auto_page(pdf)
+        print(f"No --page given, auto-picked page {page} (detected as {kind}).")
     out_dir = args.out or os.path.join("data", "out", stem)
     os.makedirs(out_dir, exist_ok=True)
 
+    if kind is None:  # explicit --page: figure out what's actually there
+        infos = classify_pdf(pdf)
+        kind = infos[page].kind if page < len(infos) else "sparse"
+    if kind == "raster":
+        return _extract_raster(args, pdf, page, stem, out_dir)
+    return _extract_vector(args, pdf, page, stem, out_dir)
+
+
+def _extract_raster(args, pdf, page, stem, out_dir):
+    regions = find_image_regions(pdf, page)
+    if not regions:
+        print(f"Page {page} has no sizeable embedded image to trace. "
+              f"Try a different --page (see `cvdigitize info`).")
+        return 1
+
+    region = regions[0]
+    results = extract_all_panel_curves(pdf, page, region.bbox)
+    results = [r for r in results if len(r["polyline"]) >= 20]
+    if not results:
+        print(f"No traceable curve found in the image on page {page}.")
+        return 1
+
+    rdir = out_dir
+    os.makedirs(rdir, exist_ok=True)
+
+    if args.raster_panel is None and len(results) > 1:
+        # Discovery mode: show what was found, let the user pick + calibrate.
+        fig, ax = plt.subplots(figsize=(11, 13))
+        ax.imshow(results[0]["image"]); ax.axis("off")
+        for i, r in enumerate(results):
+            x0, y0, x1, y1 = r["frame_px"]
+            ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
+                                       edgecolor="lime", linewidth=2))
+            ax.text(x0 + 4, y0 + 20, f"[{i}]", color="lime", fontsize=16, weight="bold")
+        ax.set_title(f"{stem} p{page} — {len(results)} plot panels auto-detected")
+        fig.tight_layout()
+        preview = os.path.join(rdir, f"raster_panels_p{page}.png")
+        fig.savefig(preview, dpi=100); plt.close(fig)
+
+        print(f"Found {len(results)} plot panels on page {page} (composite raster figure).")
+        print(f"Preview with panel numbers: {preview}\n")
+        for i, r in enumerate(results):
+            xt, yt = r["ticks"]["x_ticks"], r["ticks"]["y_ticks"]
+            print(f"  [{i}] {len(r['polyline'])} curve points, "
+                  f"{len(xt)} x-ticks / {len(yt)} y-ticks auto-detected")
+        print(f'\nPick one and (optionally) calibrate, e.g.:\n'
+              f'  python -m cvdigitize extract "{pdf}" --page {page} --raster-panel 0 '
+              f'--x-ticks -0.8,0.2 --y-ticks 25,-50 --x-unit "V" --y-unit "uA"\n'
+              f"(tick values = the two outermost axis labels printed on that panel; "
+              f"omit them to get a normalised curve instead)")
+        return 0
+
+    idx = args.raster_panel or 0
+    if idx >= len(results):
+        print(f"--raster-panel {idx} out of range (found {len(results)} panel(s), 0-{len(results)-1}).")
+        return 1
+    r = results[idx]
+    xt, yt = r["ticks"]["x_ticks"], r["ticks"]["y_ticks"]
+
+    calib = None
+    if args.x_ticks or args.y_ticks:
+        if not (args.x_ticks and args.y_ticks):
+            print("Pass both --x-ticks and --y-ticks to calibrate (or neither for a normalised curve).")
+            return 1
+        if len(xt) < 2 or len(yt) < 2:
+            print(f"Only {len(xt)} x-tick(s)/{len(yt)} y-tick(s) auto-detected - need at least 2 "
+                  f"per axis to calibrate. Try a cleaner/higher-res source, or a different panel.")
+            return 1
+        x_lo, x_hi = _parse_two_floats(args.x_ticks)
+        y_lo, y_hi = _parse_two_floats(args.y_ticks)
+        calib = calibration_from_anchors(
+            x_anchor1=(xt[0], x_lo), x_anchor2=(xt[-1], x_hi),
+            y_anchor1=(yt[0], y_lo), y_anchor2=(yt[-1], y_hi),
+            x_unit=args.x_unit or "", y_unit=args.y_unit or "",
+        )
+
+    # Ticks are detected in the same pixel space as `image`/`polyline_px` (not
+    # the PDF-point `polyline`) — calibrate and overlay against that directly.
+    poly = r["polyline_px"]
+    if calib is not None:
+        data = calib.apply(poly)
+        xlab, ylab, xunit, yunit = calib.x_label, calib.y_label, calib.x_unit, calib.y_unit
+    else:
+        x, y = poly[:, 0], poly[:, 1]
+        xr, yr = (x.max() - x.min()) or 1, (y.max() - y.min()) or 1
+        data = np.column_stack([(x - x.min()) / xr, 1 - (y - y.min()) / yr])
+        xlab, ylab, xunit, yunit = "x_norm", "y_norm", "0..1", "0..1 (up=+)"
+    if args.resample and len(data) > 2:
+        data = resample_arclength(data, n=args.resample)
+
+    plabel = f"r{idx}"
+    pdir = os.path.join(rdir, f"panel_{plabel}")
+    os.makedirs(pdir, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(11, 13)); ax.imshow(r["image"]); ax.axis("off")
+    x0, y0, x1, y1 = r["frame_px"]
+    ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
+                               edgecolor="lime", linewidth=2))
+    ax.plot(poly[:, 0], poly[:, 1], color="red", lw=1.2, label="extracted")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(f"{stem} p{page} panel {plabel} (raster)")
+    fig.tight_layout(); fig.savefig(os.path.join(pdir, "overlay.png"), dpi=100); plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(data[:, 0], data[:, 1], color="black", lw=1.0)
+    ax.set_xlabel(f"{xlab} / {xunit}"); ax.set_ylabel(f"{ylab} / {yunit}")
+    ax.set_title(("Digitized curve" if calib else "Digitized curve (normalised)")
+                + f" — panel {plabel}")
+    ax.grid(alpha=0.2)
+    fig.tight_layout(); fig.savefig(os.path.join(pdir, "curves.png"), dpi=110); plt.close(fig)
+
+    name = f"{stem}_{plabel}"
+    meta = CurveMeta(name=name, figure=(args.figure or f"panel {plabel}"), curve=plabel,
+                     scan_rate=args.scan_rate or "", x_label=xlab, x_unit=xunit,
+                     y_label=ylab, y_unit=yunit, source_pdf=pdf, method="digitized",
+                     comment="auto-extracted from a rasterized/scanned figure (colour-mask trace)"
+                             + ("" if calib else "; UNCALIBRATED (normalised coords)"))
+    if calib is not None:
+        paths = write_datapackage(pdir, data, meta, yaml=not args.no_yaml)
+    else:
+        p = os.path.join(pdir, name + ".csv")
+        write_csv(p, data, meta)
+        paths = {"csv": p}
+
+    report = {"pdf": pdf, "page": page, "panels_grid": [1, 1], "calibrated": calib is not None,
+             "curves": [{"panel": plabel, "name": name, "color": plabel, "rgb": [0, 0, 0],
+                        "n_points": len(data), "units": [xunit, yunit],
+                        "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}}]}
+    with open(os.path.join(rdir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    _write_html_report(rdir, stem, report)
+
+    print(f"Extracted 1 curve from {stem} p{page} panel {plabel} "
+          f"({'calibrated' if calib else 'UNCALIBRATED - pass --x-ticks/--y-ticks for real units'}).")
+    print(f"Output: {rdir}")
+    return 0
+
+
+def _extract_vector(args, pdf, page, stem, out_dir):
     calib = Calibration.load(args.calibration) if args.calibration else None
     nx, ny = _parse_grid(args.panels)
 
@@ -234,7 +419,6 @@ def cmd_extract(args):
                 paths = write_datapackage(pdir, pc["data"], meta, yaml=not args.no_yaml)
             else:
                 # only CSV when uncalibrated
-                from .package import write_csv
                 p = os.path.join(pdir, name + ".csv")
                 write_csv(p, pc["data"], meta)
                 paths = {"csv": p}
@@ -250,7 +434,7 @@ def cmd_extract(args):
     _write_html_report(out_dir, stem, report)
 
     print(f"Extracted {total} curve(s) from {stem} p{page} "
-          f"({'calibrated' if calib else 'UNCALIBRATED — pass --calibration for real units'}).")
+          f"({'calibrated' if calib else 'UNCALIBRATED - pass --calibration for real units'}).")
     print(f"Output: {out_dir}")
     if not calib:
         print("Tip: run `python -m cvdigitize grid "
@@ -259,8 +443,11 @@ def cmd_extract(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cvdigitize",
-                                description="Digitize CV curves from vector PDFs.")
+    p = argparse.ArgumentParser(
+        prog="cvdigitize",
+        description="Digitize Cyclic Voltammetry curves out of PDFs - vector or scanned.",
+        epilog='Quick start: cvdigitize mypaper.pdf   (no subcommand needed)',
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("info", help="classify pages; list figure candidates")
@@ -279,6 +466,15 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--scan-rate", default=None, help="e.g. '50 mV/s'")
     pe.add_argument("--no-yaml", action="store_true", help="skip YAML metadata")
     pe.add_argument("--out", default=None, help="output dir (default data/out/<pdf>)")
+    pe.add_argument("--raster-panel", type=int, default=None,
+                    help="[raster pages] which auto-detected plot panel to use (0-indexed)")
+    pe.add_argument("--x-ticks", default=None, metavar="LO,HI",
+                    help="[raster pages] data values of the first/last auto-detected x-tick, "
+                         "e.g. -0.8,0.2 (both --x-ticks and --y-ticks needed to calibrate)")
+    pe.add_argument("--y-ticks", default=None, metavar="LO,HI",
+                    help="[raster pages] data values of the first/last auto-detected y-tick")
+    pe.add_argument("--x-unit", default=None, help="[raster pages] x-axis unit, e.g. 'V'")
+    pe.add_argument("--y-unit", default=None, help="[raster pages] y-axis unit, e.g. 'uA'")
     pe.set_defaults(func=cmd_extract)
 
     pg = sub.add_parser("grid", help="render a page with a pixel grid for calibration")
@@ -291,8 +487,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_KNOWN_COMMANDS = {"info", "extract", "grid", "-h", "--help"}
+
+
+def _with_implicit_extract(argv: list[str]) -> list[str]:
+    """Let ``cvdigitize mypaper.pdf`` work without typing ``extract`` first.
+
+    If the first argument isn't a known subcommand, treat it (and everything
+    after it) as arguments to ``extract`` — this is the single biggest
+    friction point for a first-time user, so remove it.
+    """
+    if argv and argv[0] not in _KNOWN_COMMANDS:
+        return ["extract", *argv]
+    return argv
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(_with_implicit_extract(argv))
     return args.func(args)
 
 
