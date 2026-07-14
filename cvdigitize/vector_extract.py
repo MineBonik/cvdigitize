@@ -56,6 +56,92 @@ def _bezier_points(p0, p1, p2, p3, n: int = 12) -> list[tuple[float, float]]:
     return list(zip(x.tolist(), y.tolist()))
 
 
+def _is_thin_line_dims(w: float, h: float, *, thin_thresh: float = 2.0,
+                       long_thresh: float = 15.0) -> bool:
+    """True for dimensions shaped like an axis/frame line, not a data marker.
+
+    Some PDF exporters draw axis borders, tick marks and gridlines as thin
+    *filled* rectangles rather than stroked lines (e.g. a "line" 0.8pt thick
+    and 210pt long) — sometimes via the ``re`` opcode, sometimes as four
+    ``l`` (lineto) segments tracing the same shape. Either way, walking all 4
+    corners of such a rectangle necessarily includes an edge equal to its long
+    dimension, which — if wrongly treated as curve data — shows up as a huge,
+    spurious jump in the digitized trace. A real data-point marker is small in
+    *both* dimensions; a frame/tick line is thin in exactly one. That
+    asymmetry is what this check keys on.
+    """
+    return min(w, h) <= thin_thresh and max(w, h) >= long_thresh
+
+
+def _is_axis_aligned_rect(poly: np.ndarray, *, tol: float = 0.5) -> bool:
+    """True if every point sits on one of exactly 2 x-levels and 2 y-levels.
+
+    A frame/tick rectangle traced as 4-5 points has *exactly* two distinct x
+    positions and two distinct y positions (perfectly axis-aligned corners). A
+    real curve segment does not, even where it happens to be short, thin and
+    steep (e.g. near a sharp peak) — its points vary continuously rather than
+    snapping to two discrete levels. Requiring this shape, not just thinness,
+    avoids mistaking a genuine steep/thin curve segment for a frame line.
+    """
+    ux = np.unique(np.round(poly[:, 0] / tol))
+    uy = np.unique(np.round(poly[:, 1] / tol))
+    return len(ux) <= 2 and len(uy) <= 2
+
+
+def _is_thin_line_polyline(poly: np.ndarray, *, max_corners: int = 5, **kwargs) -> bool:
+    """True if a small closed polyline is shaped like an axis/frame line.
+
+    Catches a thin frame/tick rectangle whether it was drawn as a single
+    ``re`` op or as a sequence of ``l`` (lineto) ops tracing the same shape —
+    both end up here as a small (<= ``max_corners``-point), axis-aligned,
+    thin-and-long polyline.
+    """
+    if len(poly) > max_corners or not _is_axis_aligned_rect(poly):
+        return False
+    w = float(poly[:, 0].max() - poly[:, 0].min())
+    h = float(poly[:, 1].max() - poly[:, 1].min())
+    return _is_thin_line_dims(w, h, **kwargs)
+
+
+def _is_narrow_tall_column(poly: np.ndarray, *, max_width: float = 15.0,
+                          min_height: float = 100.0) -> bool:
+    """True for a shape far narrower than it is tall — a text column or
+    page-divider rule, not a CV curve.
+
+    Some PDFs render body text (or decorative column rules) with *stroke*
+    colour rather than fill, so it can land in the same colour group as a
+    real stroked curve and, if several glyphs merge into one long drawing, get
+    force-stitched in as a spurious near-vertical "curve". A genuine CV
+    branch always has comparable extent in both directions — even the
+    steepest real peak in this project's reference data never exceeds ~40pt
+    of height while under 15pt wide (see rizo Pt(111)); this heuristic uses
+    100pt as a wide safety margin above that.
+    """
+    w = float(poly[:, 0].max() - poly[:, 0].min())
+    h = float(poly[:, 1].max() - poly[:, 1].min())
+    return w <= max_width and h >= min_height
+
+
+def _is_tick_mark(poly: np.ndarray, *, max_points: int = 3, max_diag: float = 12.0) -> bool:
+    """True for a tiny, isolated 2-3 point segment — an axis tick, not curve data.
+
+    Axis tick marks are typically drawn as their own short, standalone
+    straight segment (one PDF "l" op each) in whatever colour the axis uses
+    (often black, regardless of which curve is nearby) — so they can land in
+    a real curve's colour group and skew its bounding box, distorting shape
+    comparisons even though they never affect the stitched trace itself
+    (their length is negligible next to the real curve). A real digitized
+    curve segment, even a coarse one, spans far more than a tick's ~1-10pt
+    diagonal; this project's reference data shows every genuine ≤3-point
+    fragment already under this size is a tick (never legitimate curve data).
+    """
+    if len(poly) > max_points:
+        return False
+    diag = float(np.hypot(poly[:, 0].max() - poly[:, 0].min(),
+                          poly[:, 1].max() - poly[:, 1].min()))
+    return diag <= max_diag
+
+
 def _items_to_polylines(items, bezier_samples: int = 12) -> list[np.ndarray]:
     """Flatten one drawing's item list into a list of polylines (Nx2 arrays).
 
@@ -74,9 +160,12 @@ def _items_to_polylines(items, bezier_samples: int = 12) -> list[np.ndarray]:
         current = []
 
     def _cont(pt) -> bool:
-        # Is pt (approximately) the last point of the current polyline?
+        # Is pt (approximately) the last point of the current polyline? An
+        # empty `current` is never "continuous" -- it forces pt to be
+        # appended as the new starting point instead of being silently
+        # dropped (there is nothing yet for it to be a continuation of).
         if not current:
-            return True
+            return False
         lx, ly = current[-1]
         return abs(lx - pt.x) < 1e-3 and abs(ly - pt.y) < 1e-3
 
@@ -110,7 +199,10 @@ def _items_to_polylines(items, bezier_samples: int = 12) -> list[np.ndarray]:
                        (q.lr.x, q.lr.y), (q.ll.x, q.ll.y)]
             _flush()
     _flush()
-    return [np.asarray(p, dtype=float) for p in polylines]
+    arrays = [np.asarray(p, dtype=float) for p in polylines]
+    return [p for p in arrays
+           if not _is_thin_line_polyline(p) and not _is_narrow_tall_column(p)
+           and not _is_tick_mark(p)]
 
 
 @dataclass
@@ -154,8 +246,24 @@ def extract_color_groups(
     clip: tuple[float, float, float, float] | None = None,
     bezier_samples: int = 12,
     drop_light: bool = True,
+    use_fill_fallback: bool = True,
 ) -> list[CurveGroup]:
-    """Extract stroked curves from ``page_number`` grouped by stroke colour.
+    """Extract curves from ``page_number`` grouped by colour.
+
+    Most PDFs draw curves as *stroked* paths (``color``). Some plotting/export
+    tools instead convert each stroke to its own thin filled outline polygon
+    (``color`` is ``None``, only ``fill`` is set) — a "ribbon" tracing both
+    sides of the line width rather than a single centreline. When
+    ``use_fill_fallback`` is set, such shapes are grouped by fill colour
+    instead of being silently dropped; the ribbon is thin enough that the
+    downstream loop-ordering/resampling still produces a usable curve.
+
+    Fill-colour grouping only kicks in for a colour that has **no** stroked
+    drawings at all on the page — fill-only shapes are also how PDF text is
+    rendered (each glyph is a small filled outline), and merging glyph shapes
+    into an already-good stroke-based curve group (e.g. black axis-label text
+    into a black stroked curve) would corrupt it. A colour with real stroke
+    data never needs the fallback anyway.
 
     Parameters
     ----------
@@ -166,12 +274,20 @@ def extract_color_groups(
     """
     doc = fitz.open(pdf_path)
     page = doc[page_number]
+    drawings = page.get_drawings()
+    stroked_rgbs = {_round_rgb(d["color"]) for d in drawings if d.get("color") is not None}
     groups: dict[tuple[float, float, float], CurveGroup] = {}
 
-    for d in page.get_drawings():
+    for d in drawings:
         color = d.get("color")
-        if color is None:  # unstroked (fill-only) element -> skip
-            continue
+        if color is None:
+            if not use_fill_fallback:
+                continue
+            color = d.get("fill")
+            if color is None:
+                continue
+            if _round_rgb(color) in stroked_rgbs:
+                continue  # this colour already has real stroke data; don't add glyph noise
         rgb = _round_rgb(color)
         if drop_light and is_light_gray(rgb):
             continue
