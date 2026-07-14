@@ -19,7 +19,70 @@ E/j); calibration is a separate, linear step (see ``calibrate.py``).
 """
 from __future__ import annotations
 
+from collections import defaultdict
+
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# 0. Drop isolated stray sub-paths (e.g. legend colour swatches)
+# ---------------------------------------------------------------------------
+def _arclen(pl: np.ndarray) -> float:
+    return float(np.hypot(np.diff(pl[:, 0]), np.diff(pl[:, 1])).sum())
+
+
+def _endpoint_components(polylines: list[np.ndarray], tol: float) -> list[list[int]]:
+    """Union-find sub-paths whose endpoints lie within ``tol`` of each other."""
+    n = len(polylines)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    ends = [(pl[0], pl[-1]) for pl in polylines]
+    for i in range(n):
+        for j in range(i + 1, n):
+            (si, ei), (sj, ej) = ends[i], ends[j]
+            d = min(np.hypot(*(si - sj)), np.hypot(*(si - ej)),
+                    np.hypot(*(ei - sj)), np.hypot(*(ei - ej)))
+            if d <= tol:
+                union(i, j)
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+    return list(groups.values())
+
+
+def keep_main_components(polylines: list[np.ndarray], *, tol_frac: float = 0.05,
+                         keep_frac: float = 0.12) -> list[np.ndarray]:
+    """Return sub-paths belonging to the significant connected components.
+
+    A CV curve is one or two large components (the anodic/cathodic branches);
+    a legend colour swatch is a tiny isolated component drawn in the same
+    colour. We cluster sub-paths by endpoint proximity (tolerance = a fraction
+    of the group's bbox diagonal) and keep every component whose total arc
+    length is at least ``keep_frac`` of the largest — dropping stray swatches
+    while preserving both real branches.
+    """
+    pls = [np.asarray(p, float) for p in polylines if len(p) >= 2]
+    if len(pls) <= 1:
+        return pls
+    pts = np.vstack(pls)
+    diag = float(np.hypot(np.ptp(pts[:, 0]), np.ptp(pts[:, 1]))) or 1.0
+    comps = _endpoint_components(pls, tol_frac * diag)
+    sizes = [sum(_arclen(pls[i]) for i in c) for c in comps]
+    mx = max(sizes) or 1.0
+    kept: list[np.ndarray] = []
+    for c, size in zip(comps, sizes):
+        if size >= keep_frac * mx:
+            kept.extend(pls[i] for i in c)
+    return kept or pls
 
 
 # ---------------------------------------------------------------------------
@@ -154,13 +217,15 @@ def resample_uniform_x(branch: np.ndarray, n: int) -> np.ndarray:
     return np.column_stack([grid, yg])
 
 
-def clean_cv(polylines: list[np.ndarray], *, n_arclength: int = 1000
-             ) -> dict[str, np.ndarray]:
+def clean_cv(polylines: list[np.ndarray], *, n_arclength: int = 1000,
+             drop_stray: bool = True) -> dict[str, np.ndarray]:
     """Full loop clean-up from raw sub-paths.
 
     Returns a dict with the ordered ``loop`` and an evenly arc-length-sampled
     ``smooth`` trace, plus the ``forward``/``reverse`` scan branches.
     """
+    if drop_stray:
+        polylines = keep_main_components(polylines)
     loop = dedupe(order_curve(polylines))
     forward, reverse = split_branches(loop)
     smooth = resample_arclength(loop, n=n_arclength)
