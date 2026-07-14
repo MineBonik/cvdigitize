@@ -1,0 +1,13 @@
+# cvdigitize dependencies (Python 3.11)
+# Install:  py -3.11 -m venv .venv
+#           .venv\Scripts\python.exe -m pip install -r requirements.txt
+pymupdf>=1.28      # PDF parsing + vector drawing extraction (fitz)
+lxml>=6.0          # SVG XML manipulation
+numpy>=2.0         # geometry / arrays
+scipy>=1.13        # nearest-neighbour metric, resampling (M1)
+matplotlib>=3.9    # verification overlays / figures
+
+# --- planned for later milestones (not yet required) ---
+# svgdigitizer>=0.14.4   # M1: vector -> CSV digitization engine
+# opencv-python           # M2: raster color-mask tracing
+# pytesseract             # M3: OCR axis auto-calibration

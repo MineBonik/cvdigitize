@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual environment
+.venv/
+venv/
+
+# Generated outputs (kept out of history; regenerate with the scripts/CLI)
+data/out/
+
+# OS
+Thumbs.db
+.DS_Store
