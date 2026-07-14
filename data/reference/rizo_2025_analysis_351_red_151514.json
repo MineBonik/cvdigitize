@@ -1,0 +1,58 @@
+{
+    "resources": [
+        {
+            "name": "rizo_2025_analysis_351_red_151514",
+            "type": "table",
+            "path": "rizo_2025_analysis_351_red_151514.csv",
+            "scheme": "file",
+            "format": "csv",
+            "mediatype": "text/csv",
+            "encoding": "utf-8",
+            "schema": {
+                "fields": [
+                    {
+                        "name": "E",
+                        "type": "number",
+                        "unit": "V vs RHE"
+                    },
+                    {
+                        "name": "j",
+                        "type": "number",
+                        "unit": "uA/cm2"
+                    }
+                ]
+            },
+            "metadata": {
+                "echemdb": {
+                    "experimental": {
+                        "tags": []
+                    },
+                    "source": {
+                        "figure": "1a",
+                        "curve": "red"
+                    },
+                    "figureDescription": {
+                        "type": "digitized",
+                        "simultaneousMeasurements": [],
+                        "measurementType": "custom",
+                        "fields": [
+                            {
+                                "name": "E",
+                                "type": "number",
+                                "unit": "V vs RHE",
+                                "orientation": "horizontal"
+                            },
+                            {
+                                "name": "j",
+                                "type": "number",
+                                "unit": "uA/cm2",
+                                "orientation": "vertical"
+                            }
+                        ],
+                        "comment": ""
+                    }
+                }
+            }
+        }
+    ]
+}
