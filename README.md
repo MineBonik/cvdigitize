@@ -40,7 +40,7 @@ thing; use whichever your shell prefers.
 |-----------|--------------|-------|
 | **M0** | Vector PDF → auto-split each CV curve by stroke colour, localised per panel | done & verified |
 | **M1** | Loop ordering, axis calibration, arc-length/uniform-E resampling, echemdb packaging, CLI | done & verified |
-| **M2** | Auto vector/raster classify + colour/brightness-trace for rasterized figures, incl. multi-panel auto-detection and automatic tick-mark finding | done & verified |
+| **M2** | Auto vector/raster classify + colour/brightness-trace for rasterized figures, incl. multi-panel auto-detection, tiling-strip merging, closed **and L-shaped (despined)** axes, automatic tick-mark finding, and **multi-colour curve splitting by hue** (crossing-tolerant) | done & verified |
 | **M3** | Automatic calibration | done for PDFs with live figure text; assisted (4 typed numbers) everywhere else |
 
 ### Calibration — three tiers, tried in order
