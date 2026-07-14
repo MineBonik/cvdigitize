@@ -43,9 +43,36 @@ class ImageRegion:
     bbox: tuple[float, float, float, float]   # (x0, y0, x1, y1) PDF points
 
 
+def _merge_tiling(regions: list["ImageRegion"], gap: float = 4.0) -> list["ImageRegion"]:
+    """Union image rects that tile one figure (PDF producers often slice a
+    single figure into several abutting strips). Two rects merge when they
+    share one axis span (within ``gap``) and touch along the other."""
+    boxes = [list(r.bbox) for r in regions]
+    xrefs = [r.xref for r in regions]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                same_x = abs(a[0] - b[0]) <= gap and abs(a[2] - b[2]) <= gap
+                same_y = abs(a[1] - b[1]) <= gap and abs(a[3] - b[3]) <= gap
+                touch_v = min(abs(a[3] - b[1]), abs(b[3] - a[1])) <= gap
+                touch_h = min(abs(a[2] - b[0]), abs(b[2] - a[0])) <= gap
+                if (same_x and touch_v) or (same_y and touch_h):
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]),
+                                max(a[2], b[2]), max(a[3], b[3])]
+                    del boxes[j], xrefs[j]
+                    changed = True
+                    break
+            if changed:
+                break
+    return [ImageRegion(x, tuple(b)) for x, b in zip(xrefs, boxes)]
+
+
 def find_image_regions(pdf_path: str, page_number: int,
                        *, min_area_frac: float = 0.05) -> list[ImageRegion]:
-    """Embedded images on a page, largest first, dropping tiny icons/logos."""
+    """Embedded images on a page (tiling strips merged), largest first."""
     import fitz
     doc = fitz.open(pdf_path)
     page = doc[page_number]
@@ -54,10 +81,13 @@ def find_image_regions(pdf_path: str, page_number: int,
     for img in page.get_images(full=True):
         xref = img[0]
         for r in page.get_image_rects(xref):
-            area = abs(r.width * r.height)
-            if area / page_area >= min_area_frac:
+            if abs(r.width * r.height) / page_area >= 0.01:
                 regions.append(ImageRegion(xref, (r.x0, r.y0, r.x1, r.y1)))
     doc.close()
+    regions = _merge_tiling(regions)
+    regions = [rg for rg in regions
+               if ((rg.bbox[2] - rg.bbox[0]) * (rg.bbox[3] - rg.bbox[1])
+                   / page_area) >= min_area_frac]
     regions.sort(key=lambda rg: (rg.bbox[2] - rg.bbox[0]) * (rg.bbox[3] - rg.bbox[1]),
                 reverse=True)
     return regions
@@ -230,6 +260,18 @@ def detect_all_frames(gray: np.ndarray, *, dark_thresh: int = 220,
                     if not (ry0 <= top + tol_h and ry1 >= bottom - tol_h):
                         continue
                     rects.append((left, top, right, bottom))
+
+    if not rects:
+        # Fallback: L-shaped (despined) axes — just a left spine and a bottom
+        # spine, the default matplotlib style. A horizontal line whose LEFT
+        # end meets a vertical line's BOTTOM end forms the corner; the frame's
+        # top/right bounds are simply the spines' far ends.
+        tol = max(8, minlen // 6)
+        for r, hx0, hx1 in hlines:
+            for c, vy0, vy1 in vlines:
+                if abs(hx0 - c) <= tol and abs(vy1 - r) <= tol:
+                    if (hx1 - c) >= min_w and (r - vy0) >= min_h:
+                        rects.append((c, vy0, hx1, r))
 
     # Collinear/abutting borders between adjacent panels can make a *union* of
     # several panels also pass the consistency test. Such a union always
