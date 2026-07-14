@@ -25,6 +25,35 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Loop-likeness: a CV is a closed loop that encloses area; a schematic line,
+# a Nyquist arc or an axis fragment is not. Used to gauge how "CV-like" an
+# extracted trace is (reporting/triage only — never drops data).
+# ---------------------------------------------------------------------------
+def loop_metrics(xy: np.ndarray) -> dict[str, float]:
+    """Return ``{'area_frac', 'closure', 'loopiness'}`` for an ordered curve.
+
+    ``area_frac``  polygon area enclosed by the trace / its bounding-box area
+                   (a fat CV loop is ~0.2-0.6; a thin open line is ~0).
+    ``closure``    1 - gap(start,end)/bbox_diagonal (1 = perfectly closed).
+    ``loopiness``  area_frac * closure — a single 0..1 CV-likeness score.
+    """
+    if len(xy) < 4:
+        return {"area_frac": 0.0, "closure": 0.0, "loopiness": 0.0}
+    x, y = xy[:, 0], xy[:, 1]
+    w = float(np.ptp(x)); h = float(np.ptp(y))
+    bbox_area = w * h
+    if bbox_area <= 0:
+        return {"area_frac": 0.0, "closure": 0.0, "loopiness": 0.0}
+    area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    area_frac = min(1.0, area / bbox_area)
+    diag = float(np.hypot(w, h)) or 1.0
+    gap = float(np.hypot(x[0] - x[-1], y[0] - y[-1]))
+    closure = max(0.0, 1.0 - gap / diag)
+    return {"area_frac": area_frac, "closure": closure,
+            "loopiness": area_frac * closure}
+
+
+# ---------------------------------------------------------------------------
 # 0. Drop isolated stray sub-paths (e.g. legend colour swatches)
 # ---------------------------------------------------------------------------
 def _arclen(pl: np.ndarray) -> float:
