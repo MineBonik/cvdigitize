@@ -78,12 +78,17 @@ def _auto_page(pdf: str) -> tuple[int, str]:
 
     Prefers a vector-curves page (higher fidelity, no calibration guesswork
     needed for the split step); falls back to the first raster page with a
-    sizeable embedded image; else page 0.
+    sizeable embedded image; else page 0. Among several vector candidates the
+    one with the MOST line/curve items wins — a dense CV figure has orders of
+    magnitude more than decorative cover art or a small inset, so ranking by
+    content (not page order) avoids landing on a banner page.
     """
+    infos = classify_pdf(pdf)
     figs = find_figure_pages(pdf)
     if figs:
-        return figs[0], "vector-curves"
-    infos = classify_pdf(pdf)
+        items = {pi.number: pi.n_curve_items for pi in infos}
+        best = max(figs, key=lambda p: items.get(p, 0))
+        return best, "vector-curves"
     for pi in infos:
         if pi.kind == "raster":
             return pi.number, "raster"
@@ -383,8 +388,23 @@ def _extract_raster(args, pdf, page, stem, out_dir):
 
 
 def _extract_vector(args, pdf, page, stem, out_dir):
-    calib = Calibration.load(args.calibration) if args.calibration else None
+    from .vector_extract import union_bbox
+    from .autocalib import (find_axis_label_sets, match_calibration,
+                            detect_ticks_for_bbox, assisted_tick_calibration)
+
+    manual = Calibration.load(args.calibration) if args.calibration else None
     nx, ny = _parse_grid(args.panels)
+
+    # Text-layer auto-calibration: many vector figures keep their axis tick
+    # labels as real text; a linear fit through (label position, label value)
+    # gives the full calibration with zero user input. Figures with outlined
+    # text (no words) simply yield no label sets and fall through.
+    label_sets = []
+    if manual is None and not getattr(args, "no_autocalib", False):
+        try:
+            label_sets = find_axis_label_sets(pdf, page)
+        except Exception:
+            label_sets = []
 
     # collect curves grouped per panel (1x1 = whole figure)
     if (nx, ny) == (1, 1):
@@ -400,8 +420,9 @@ def _extract_vector(args, pdf, page, stem, out_dir):
 
     img = render_page(pdf, page, zoom=3.0)
     report = {"pdf": pdf, "page": page, "panels_grid": [nx, ny],
-              "calibrated": calib is not None, "curves": []}
+              "calibrated": manual is not None, "curves": []}
     total = 0
+    modes_seen = []
 
     for key in sorted(panels):
         if wanted is not None and key != wanted:
@@ -410,6 +431,52 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         plabel = panel_label(key[0], key[1], nx) if (nx, ny) != (1, 1) else ""
         pdir = os.path.join(out_dir, f"panel_{plabel}") if plabel else out_dir
         os.makedirs(pdir, exist_ok=True)
+
+        # ---- resolve this panel's calibration: manual > auto-text > assisted
+        bbox = union_bbox(curves) if curves else None
+        calib, mode, detection = manual, ("manual" if manual else "none"), None
+        if calib is None and label_sets and bbox:
+            calib = match_calibration(label_sets, bbox)
+            if calib is not None:
+                mode = "auto-text"
+                print(f"Panel {plabel or '(whole figure)'}: auto-calibrated from axis "
+                      f"text labels — x: [{calib.ex1:.3g}, {calib.ex2:.3g}] "
+                      f"\"{calib.x_unit}\", y: [{calib.jy1:.3g}, {calib.jy2:.3g}] "
+                      f"\"{calib.y_unit}\" (verify units in the YAML)")
+        if calib is None and args.x_ticks and args.y_ticks and bbox:
+            detection = detect_ticks_for_bbox(pdf, page, bbox)
+            if detection is not None:
+                calib = assisted_tick_calibration(
+                    detection, _parse_two_floats(args.x_ticks),
+                    _parse_two_floats(args.y_ticks),
+                    x_unit=args.x_unit or "", y_unit=args.y_unit or "")
+                mode = "assisted-ticks"
+                print(f"Panel {plabel or '(whole figure)'}: calibrated from detected "
+                      f"tick marks + your --x-ticks/--y-ticks values.")
+            else:
+                print(f"Panel {plabel or '(whole figure)'}: could not detect an axes "
+                      f"frame with ticks — falling back to normalised output.")
+        if calib is None and bbox is not None:
+            # emit tick-label crops so the user can rerun with --x-ticks/--y-ticks
+            detection = detection or detect_ticks_for_bbox(pdf, page, bbox)
+            if detection is not None:
+                from .raster_extract import crop_tick_labels
+                crops = crop_tick_labels(detection["image"], detection["frame_px"],
+                                         detection["ticks"], zoom=detection["zoom"])
+                if crops:
+                    order = [("x_lo", "--x-ticks 1st value"), ("x_hi", "--x-ticks 2nd value"),
+                             ("y_lo", "--y-ticks 1st value"), ("y_hi", "--y-ticks 2nd value")]
+                    avail = [(k, lbl) for k, lbl in order if k in crops]
+                    fig, axs = plt.subplots(1, len(avail), figsize=(2.6 * len(avail), 2.2))
+                    axs = np.atleast_1d(axs)
+                    for ax, (k, lbl) in zip(axs, avail):
+                        ax.imshow(crops[k]); ax.set_title(lbl, fontsize=9); ax.axis("off")
+                    fig.suptitle(f"panel {plabel or 'main'} — read these into "
+                                 f"--x-ticks/--y-ticks", fontsize=10)
+                    fig.tight_layout()
+                    fig.savefig(os.path.join(pdir, "calib_helper.png"), dpi=120)
+                    plt.close(fig)
+        modes_seen.append(mode)
 
         processed = _process_curves(curves, calib, args.resample)
 
@@ -439,6 +506,12 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         fig.tight_layout(); fig.savefig(os.path.join(pdir, "curves.png"), dpi=110)
         plt.close(fig)
 
+        cal_note = {
+            "manual": "",
+            "auto-text": "; calibration auto-detected from axis text labels (verify units)",
+            "assisted-ticks": "; calibrated from detected tick marks + user-supplied values",
+            "none": "; UNCALIBRATED (normalised coords)",
+        }[mode]
         for pc in processed:
             cg = pc["group"]
             name = f"{stem}_" + (f"{plabel}_" if plabel else "") + cg.name
@@ -448,8 +521,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
                 x_label=pc["xlab"], x_unit=pc["xunit"],
                 y_label=pc["ylab"], y_unit=pc["yunit"],
                 source_pdf=pdf, method="digitized",
-                comment="auto-extracted from vector PDF"
-                        + ("" if calib else "; UNCALIBRATED (normalised coords)"),
+                comment="auto-extracted from vector PDF" + cal_note,
             )
             if calib is not None:
                 paths = write_datapackage(pdir, pc["data"], meta, yaml=not args.no_yaml)
@@ -461,21 +533,25 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             report["curves"].append({
                 "panel": plabel, "name": name, "color": cg.name, "rgb": list(cg.rgb),
                 "n_points": len(pc["data"]), "units": [pc["xunit"], pc["yunit"]],
-                "loopiness": pc["loopiness"],
+                "loopiness": pc["loopiness"], "calibration": mode,
                 "files": {k: os.path.relpath(v, out_dir) for k, v in paths.items()},
             })
             total += 1
 
+    calibrated = any(m != "none" for m in modes_seen)
+    report["calibrated"] = calibrated
+    report["calibration_modes"] = modes_seen
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     _write_html_report(out_dir, stem, report)
 
+    mode_desc = ", ".join(sorted(set(modes_seen))) or "none"
     print(f"Extracted {total} curve(s) from {stem} p{page} "
-          f"({'calibrated' if calib else 'UNCALIBRATED - pass --calibration for real units'}).")
+          f"(calibration: {mode_desc}).")
     print(f"Output: {out_dir}")
-    if not calib:
-        print("Tip: run `python -m cvdigitize grid "
-              f"\"{pdf}\" --page {page}` to read axis anchors and build a calibration JSON.")
+    if not calibrated:
+        print("For real units: check calib_helper.png (if present) and rerun with "
+              "--x-ticks=LO,HI --y-ticks=LO,HI, or pass a --calibration JSON.")
     return 0
 
 
@@ -519,7 +595,8 @@ def cmd_batch(args):
                 a = argparse.Namespace(
                     pdf=pdf, page=page, panels="1x1", panel=None, calibration=None,
                     resample=800, min_points=60, figure=None, scan_rate=None,
-                    no_yaml=True, out=paper_out, raster_panel=(0 if kind == "raster" else None),
+                    no_yaml=True, no_autocalib=False, out=paper_out,
+                    raster_panel=(0 if kind == "raster" else None),
                     x_ticks=None, y_ticks=None, x_unit=None, y_unit=None)
                 _run_extract_quiet(a)
                 rep_path = os.path.join(paper_out, "report.json")
@@ -615,6 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--figure", default=None, help="figure label for metadata")
     pe.add_argument("--scan-rate", default=None, help="e.g. '50 mV/s'")
     pe.add_argument("--no-yaml", action="store_true", help="skip YAML metadata")
+    pe.add_argument("--no-autocalib", action="store_true",
+                    help="disable automatic calibration from the PDF text layer")
     pe.add_argument("--out", default=None, help="output dir (default data/out/<pdf>)")
     pe.add_argument("--raster-panel", type=int, default=None,
                     help="[raster pages] which auto-detected plot panel to use (0-indexed)")

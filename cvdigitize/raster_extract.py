@@ -264,34 +264,91 @@ def _cluster_peaks(positions: np.ndarray, gap: int = 3) -> list[int]:
     return [int(round(sum(r) / len(r))) for r in runs]
 
 
+def _regular_subset(positions: list[int], tol_frac: float = 0.2) -> list[int]:
+    """Largest subset of positions forming an (approximate) arithmetic progression.
+
+    Axis ticks are evenly spaced; stray dark marks in the scan band (a curve
+    dipping close to the border, noise specks) are not. Tries every pair as
+    progression generators and keeps the one with the most on-grid inliers.
+    Returns positions unchanged when fewer than 4 (nothing to vote with).
+    """
+    n = len(positions)
+    if n < 4:
+        return positions
+    pos = sorted(positions)
+    best: list[int] = []
+    for i in range(n - 1):
+        for j in range(i + 1, n):
+            step = pos[j] - pos[i]
+            if step <= 2:
+                continue
+            tol = max(2.0, tol_frac * step)
+            inliers = [p for p in pos
+                       if abs((p - pos[i]) - round((p - pos[i]) / step) * step) <= tol]
+            if len(inliers) > len(best):
+                best = inliers
+    return best if len(best) >= 3 else positions
+
+
 def detect_axis_ticks(gray: np.ndarray, frame_px: tuple[int, int, int, int], *,
                       dark_thresh: int = 220, tick_band: int = 6,
                       min_count: int = 3) -> dict[str, list[int]]:
     """Find tick-mark pixel positions along the bottom and left axes of a frame.
 
     Looks for short dark tick marks just outside the frame border (below the
-    bottom edge for x-ticks, left of the left edge for y-ticks) and returns
-    their positions in the **same pixel space as** ``frame_px`` (i.e. absolute
-    in ``gray``, matching ``polyline_px`` elsewhere in this module) — not
-    frame-relative. This turns manual calibration from "find two exact pixel
-    coordinates" into "read off two tick labels", since the pixel positions
-    are already known once ticks are detected; the user only supplies the two
-    corresponding data values.
+    bottom edge for x-ticks, left of the left edge for y-ticks); if an axis
+    yields fewer than 2 there, falls back to a band just INSIDE the border
+    (inward-pointing ticks — common in ACS/print styles), where an arithmetic-
+    progression vote rejects stray marks from the curve itself grazing the
+    border. Positions are returned in the **same pixel space as** ``frame_px``
+    (absolute in ``gray``, matching ``polyline_px`` elsewhere). This turns
+    manual calibration from "find two exact pixel coordinates" into "read off
+    two tick labels": pixel positions are known once ticks are detected; the
+    user only supplies the two corresponding data values.
     """
     left, top, right, bottom = frame_px
     dark = gray < dark_thresh
     edge_margin = tick_band + 2  # drop positions this close to a corner (border bleed)
 
-    xband = dark[bottom + 2:bottom + 2 + tick_band, left:right]
-    x_positions = _cluster_peaks(np.where(xband.sum(axis=0) >= min_count)[0])
-    x_positions = [p + left for p in x_positions
-                  if edge_margin <= p <= (right - left) - edge_margin]
+    def _xscan(row0, row1):
+        band = dark[row0:row1, left:right]
+        pos = _cluster_peaks(np.where(band.sum(axis=0) >= min_count)[0])
+        return [p + left for p in pos
+                if edge_margin <= p <= (right - left) - edge_margin]
 
-    y0 = max(0, left - 2 - tick_band)
-    yband = dark[top:bottom, y0:left - 2]
-    y_positions = _cluster_peaks(np.where(yband.sum(axis=1) >= min_count)[0])
-    y_positions = [p + top for p in y_positions
-                  if edge_margin <= p <= (bottom - top) - edge_margin]
+    def _yscan(col0, col1):
+        band = dark[top:bottom, col0:col1]
+        pos = _cluster_peaks(np.where(band.sum(axis=1) >= min_count)[0])
+        return [p + top for p in pos
+                if edge_margin <= p <= (bottom - top) - edge_margin]
+
+    def _majors_only(positions, axis: str) -> list[int]:
+        """Keep full-depth (major) ticks; minor ticks are shorter strokes and
+        carry no printed label, so they must not become calibration anchors."""
+        if len(positions) < 3:
+            return positions
+        deep = 2 * tick_band + 4
+        depths = []
+        for p in positions:
+            if axis == "x":
+                col = dark[max(0, bottom - deep):bottom - 1, p - 1:p + 2]
+                depths.append(int(col.any(axis=1).sum()))
+            else:
+                row = dark[p - 1:p + 2, left + 1:left + 1 + deep]
+                depths.append(int(row.any(axis=0).sum()))
+        mx = max(depths) or 1
+        kept = [p for p, d in zip(positions, depths) if d >= 0.65 * mx]
+        return kept if len(kept) >= 2 else positions
+
+    x_positions = _xscan(bottom + 2, bottom + 2 + tick_band)
+    if len(x_positions) < 2:
+        x_positions = _regular_subset(
+            _majors_only(_regular_subset(_xscan(bottom - 2 - tick_band, bottom - 2)), "x"))
+
+    y_positions = _yscan(max(0, left - 2 - tick_band), left - 2)
+    if len(y_positions) < 2:
+        y_positions = _regular_subset(
+            _majors_only(_regular_subset(_yscan(left + 2, left + 2 + tick_band)), "y"))
 
     return {"x_ticks": x_positions, "y_ticks": y_positions}
 
@@ -309,8 +366,13 @@ def crop_tick_labels(image: np.ndarray, frame_px: tuple[int, int, int, int],
     """
     left, top, right, bottom = frame_px
     h, w = image.shape[:2]
-    lw = int(38 * zoom / 4)   # label box half-width (x) / width (y)
-    lh = int(20 * zoom / 4)   # label box height
+    # Generous boxes: label offsets from the border vary a lot between styles
+    # (outward ticks push labels further out; inward ticks leave a plain gap).
+    # A too-large crop is still perfectly readable; a too-small one is blank.
+    lw = int(55 * zoom / 4)    # half-width of an x-label box
+    lh = int(34 * zoom / 4)    # height of an x-label box
+    yw = int(70 * zoom / 4)    # width of a y-label box
+    yh = int(15 * zoom / 4)    # half-height of a y-label box
     out: dict[str, np.ndarray] = {}
 
     def _clip(y0, y1, x0, x1):
@@ -321,13 +383,13 @@ def crop_tick_labels(image: np.ndarray, frame_px: tuple[int, int, int, int],
     xt = ticks.get("x_ticks", [])
     if xt:
         for key, xp in (("x_lo", xt[0]), ("x_hi", xt[-1])):
-            crop = _clip(bottom + 2, bottom + 2 + lh + 8, xp - lw, xp + lw)
+            crop = _clip(bottom + 2, bottom + 2 + lh, xp - lw, xp + lw)
             if crop is not None:
                 out[key] = crop
     yt = ticks.get("y_ticks", [])
     if yt:
         for key, yp in (("y_lo", yt[0]), ("y_hi", yt[-1])):
-            crop = _clip(yp - lh // 2, yp + lh // 2, left - 2 - int(46 * zoom / 4), left - 2)
+            crop = _clip(yp - yh, yp + yh, left - 2 - yw, left - 2)
             if crop is not None:
                 out[key] = crop
     return out

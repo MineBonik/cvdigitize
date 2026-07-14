@@ -41,12 +41,30 @@ thing; use whichever your shell prefers.
 | **M0** | Vector PDF → auto-split each CV curve by stroke colour, localised per panel | done & verified |
 | **M1** | Loop ordering, axis calibration, arc-length/uniform-E resampling, echemdb packaging, CLI | done & verified |
 | **M2** | Auto vector/raster classify + colour/brightness-trace for rasterized figures, incl. multi-panel auto-detection and automatic tick-mark finding | done & verified |
-| M3 | Fully automatic calibration (read tick *labels* via OCR, not just positions) | not started — see below |
+| **M3** | Automatic calibration | done for PDFs with live figure text; assisted (4 typed numbers) everywhere else |
 
-Note on M3: tick **pixel positions** are already auto-detected for raster
-figures (`detect_axis_ticks`) — what's left is reading the printed label text
-next to them via OCR, so even the two numbers you currently type wouldn't be
-needed. Today you still supply those two values by eye.
+### Calibration — three tiers, tried in order
+
+1. **Auto (zero input).** Many vector figures keep their axis tick labels as
+   real, selectable text (matplotlib output does by default). Each label is
+   centred on its tick, so a linear fit through (label position, label value)
+   *is* the calibration — detected, fitted, and applied automatically,
+   including the axis-title text as the unit hint. Verified on ground truth:
+   auto-calibrated output matches the known curves at Chamfer 0.004–0.007
+   with no flags at all.
+2. **Assisted (type 4 numbers).** Figures with outlined/vectorized text (ACS,
+   Elsevier production PDFs...) have no text layer. The tool then detects the
+   axes frame and tick-mark pixel positions itself (handling inward-pointing
+   ticks and filtering unlabeled minor ticks by stroke length), crops zoomed
+   images of the four outermost tick labels into `calib_helper.png`, and you
+   rerun with `--x-ticks=A,B --y-ticks=C,D`. Verified on the rizo paper: all
+   7 curves within Chamfer 0.006 of the manual reference in real units.
+3. **Manual JSON** (`--calibration file.json`) — full control fallback; also
+   what you'd use for exotic layouts. `--no-autocalib` disables tier 1.
+
+The only remaining fully-manual case is reading tick label *text* on raster
+figures without typing them (true OCR) — no OCR engine is available in this
+environment, and the crops make the typing trivial.
 
 ## Verified results
 
