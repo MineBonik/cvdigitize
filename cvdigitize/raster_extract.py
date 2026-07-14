@@ -296,6 +296,43 @@ def detect_axis_ticks(gray: np.ndarray, frame_px: tuple[int, int, int, int], *,
     return {"x_ticks": x_positions, "y_ticks": y_positions}
 
 
+def crop_tick_labels(image: np.ndarray, frame_px: tuple[int, int, int, int],
+                     ticks: dict[str, list[int]], *, zoom: float = 4.0
+                     ) -> dict[str, np.ndarray]:
+    """Crop zoomed thumbnails of the four outermost axis tick labels.
+
+    Turns the one remaining manual step (calibration) into "read four numbers
+    off zoomed crops" rather than hunting them in the full figure. Returns
+    ``{'x_lo','x_hi','y_lo','y_hi'}`` -> small RGB image (any may be absent).
+    Label boxes are sized generously in render-pixel units so a multi-digit,
+    possibly-negative number fits.
+    """
+    left, top, right, bottom = frame_px
+    h, w = image.shape[:2]
+    lw = int(38 * zoom / 4)   # label box half-width (x) / width (y)
+    lh = int(20 * zoom / 4)   # label box height
+    out: dict[str, np.ndarray] = {}
+
+    def _clip(y0, y1, x0, x1):
+        y0, y1 = max(0, y0), min(h, y1)
+        x0, x1 = max(0, w and x0), min(w, x1)
+        return image[y0:y1, x0:x1] if (y1 > y0 and x1 > x0) else None
+
+    xt = ticks.get("x_ticks", [])
+    if xt:
+        for key, xp in (("x_lo", xt[0]), ("x_hi", xt[-1])):
+            crop = _clip(bottom + 2, bottom + 2 + lh + 8, xp - lw, xp + lw)
+            if crop is not None:
+                out[key] = crop
+    yt = ticks.get("y_ticks", [])
+    if yt:
+        for key, yp in (("y_lo", yt[0]), ("y_hi", yt[-1])):
+            crop = _clip(yp - lh // 2, yp + lh // 2, left - 2 - int(46 * zoom / 4), left - 2)
+            if crop is not None:
+                out[key] = crop
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 2-3. Isolate the curve
 # --------------------------------------------------------------------------- #
