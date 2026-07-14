@@ -513,6 +513,138 @@ def skeleton_to_polyline(skel: np.ndarray, *, max_spur_len: int = 15) -> np.ndar
 
 
 # --------------------------------------------------------------------------- #
+# Multi-colour curve splitting (raster analogue of the vector colour grouping)
+# --------------------------------------------------------------------------- #
+_HUE_NAMES = [(20, "red"), (45, "orange"), (70, "yellow"), (160, "green"),
+              (200, "cyan"), (260, "blue"), (300, "violet"), (340, "magenta"),
+              (361, "red")]
+
+
+def _hue_name(hue_deg: float) -> str:
+    for hi, name in _HUE_NAMES:
+        if hue_deg < hi:
+            return name
+    return "red"
+
+
+def _mask_to_curve(mask: np.ndarray, *, max_spur_len: int,
+                   max_stroke_width: float = 9.0,
+                   min_x_span_frac: float = 0.4) -> np.ndarray | None:
+    """Components -> skeletons -> stitched polyline, with plausibility gates.
+
+    A curve that crosses another gets overpainted at the intersections and its
+    mask breaks into several pieces, so ALL significant components are kept
+    (not just the largest) and their skeleton segments are stitched back into
+    one traversal by the same greedy endpoint matcher the vector branch uses.
+
+    Gates — thinness: a stroked curve's pixel area is roughly (skeleton length
+    x stroke width); a filled region (gradient fill, shaded area) is far
+    fatter and gets rejected. Span: a CV sweeps the potential window, so the
+    x-extent must cover a decent fraction of the plot — this kills the narrow
+    vertical stripes a hue slice of a smooth gradient produces.
+    """
+    from .postprocess import order_curve
+
+    m = mask.astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if n <= 1:
+        return None
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    biggest = int(areas.max())
+    if biggest < 50:
+        return None
+    keep = [i + 1 for i, a in enumerate(areas)
+            if a >= max(40, 0.05 * biggest)]
+    kept_mask = np.isin(labels, keep)
+
+    area = int(kept_mask.sum())
+    skel = skeletonize_curve(kept_mask)
+    skel_len = int(skel.sum())
+    if skel_len < 30 or area / max(skel_len, 1) > max_stroke_width:
+        return None
+
+    # walk each skeleton fragment separately, then stitch
+    sn, slabels = cv2.connectedComponents(skel.astype(np.uint8), connectivity=8)
+    pieces = []
+    for si in range(1, sn):
+        piece = skeleton_to_polyline(slabels == si, max_spur_len=max_spur_len)
+        if len(piece) >= 5:
+            pieces.append(piece)
+    if not pieces:
+        return None
+    poly = order_curve(pieces) if len(pieces) > 1 else pieces[0]
+    if len(poly) < 30:
+        return None
+    if np.ptp(poly[:, 0]) < min_x_span_frac * mask.shape[1]:
+        return None
+    return poly
+
+
+def split_color_curves(interior: np.ndarray, *, sat_thresh: float = 0.35,
+                       min_pixels: int = 200, hue_bins: int = 36,
+                       value_thresh: float = 0.55,
+                       max_spur_len: int = 15) -> list[dict]:
+    """Separate the curves inside a plot interior by colour, plus the dark one.
+
+    Clusters the hues of saturated pixels (histogram peaks), builds one mask
+    per hue cluster, and traces each through the same skeleton pipeline as the
+    dark curve. Returns ``[{name, rgb, polyline_px}, ...]`` in interior pixel
+    space, largest first. Gradient fills and stripes are rejected by
+    :func:`_mask_to_curve`'s thinness/span gates, so a figure like a rainbow-
+    filled single-curve CV still yields exactly one (dark) curve.
+    """
+    hsv = cv2.cvtColor(interior, cv2.COLOR_RGB2HSV)
+    hue = hsv[:, :, 0].astype(np.float32) * 2.0          # 0..360
+    sat = hsv[:, :, 1].astype(np.float32) / 255.0
+    val = hsv[:, :, 2].astype(np.float32) / 255.0
+    colorful = (sat >= sat_thresh) & (val >= 0.15)
+
+    curves: list[dict] = []
+    claimed = np.zeros(interior.shape[:2], dtype=bool)
+    if int(colorful.sum()) >= min_pixels:
+        hist, edges = np.histogram(hue[colorful], bins=hue_bins, range=(0.0, 360.0))
+        binw = 360.0 / hue_bins
+        for b in range(hue_bins):
+            c = int(hist[b])
+            if c < min_pixels:
+                continue
+            if c < hist[(b - 1) % hue_bins] or c < hist[(b + 1) % hue_bins]:
+                continue  # not a local peak
+            center = (edges[b] + edges[b + 1]) / 2
+            dist = np.abs(((hue - center + 180.0) % 360.0) - 180.0)
+            mask = colorful & (dist <= binw)
+            poly = _mask_to_curve(mask, max_spur_len=max_spur_len)
+            if poly is None:
+                continue
+            claimed |= mask
+            mean_rgb = tuple(round(float(v) / 255.0, 3)
+                             for v in interior[mask].mean(axis=0))
+            curves.append({"name": _hue_name(center), "rgb": mean_rgb,
+                           "polyline_px": poly})
+
+    # The dark (black/grey) curve. Exclude only pixels already claimed by an
+    # ACCEPTED colour curve — not all saturated pixels: a black line running
+    # through a coloured gradient fill acquires the fill's hue/saturation in
+    # its anti-aliased blend while staying dark, and darkness (not lack of
+    # colour) is what defines it. This keeps single-dark-curve figures with
+    # decorative fills working exactly as before.
+    dark = mask_dark_curve(interior, value_thresh=value_thresh) & ~claimed
+    poly = _mask_to_curve(dark, max_spur_len=max_spur_len)
+    if poly is not None:
+        curves.append({"name": "dark", "rgb": (0.1, 0.1, 0.1), "polyline_px": poly})
+
+    # de-duplicate names (two peaks can share a base name: red vs red2)
+    seen: dict[str, int] = {}
+    for cdict in curves:
+        n = seen.get(cdict["name"], 0)
+        seen[cdict["name"]] = n + 1
+        if n:
+            cdict["name"] = f"{cdict['name']}{n + 1}"
+    curves.sort(key=lambda d: len(d["polyline_px"]), reverse=True)
+    return curves
+
+
+# --------------------------------------------------------------------------- #
 # End-to-end
 # --------------------------------------------------------------------------- #
 def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
@@ -529,7 +661,14 @@ def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
     poly_px = skeleton_to_polyline(skel, max_spur_len=max_spur_len)  # (x, y) in `interior` px
     poly_px = poly_px + np.array([x0 + inset, y0 + inset])           # -> `img` pixel space
 
-    return {"polyline_px": poly_px, "frame_px": frame, "mask": comp, "skeleton": skel}
+    offset = np.array([x0 + inset, y0 + inset], dtype=float)
+    curves = []
+    for cdict in split_color_curves(interior, value_thresh=value_thresh,
+                                    max_spur_len=max_spur_len):
+        curves.append({**cdict, "polyline_px": cdict["polyline_px"] + offset})
+
+    return {"polyline_px": poly_px, "frame_px": frame, "mask": comp,
+            "skeleton": skel, "curves": curves}
 
 
 def extract_raster_curve(
