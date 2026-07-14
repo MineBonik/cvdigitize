@@ -49,7 +49,8 @@ import matplotlib.pyplot as plt
 from .ingest import classify_pdf, render_page
 from .vector_extract import (extract_color_groups, extract_panels,
                              find_figure_pages, panel_label)
-from .postprocess import order_curve, dedupe, resample_arclength, keep_main_components
+from .postprocess import (order_curve, dedupe, resample_arclength,
+                          keep_main_components, loop_metrics)
 from .calibrate import Calibration, calibration_from_anchors
 from .package import write_datapackage, write_csv, CurveMeta
 from .raster_extract import find_image_regions, extract_all_panel_curves
@@ -91,13 +92,21 @@ def _auto_page(pdf: str) -> tuple[int, str]:
 def cmd_info(args):
     infos = classify_pdf(args.pdf)
     figs = find_figure_pages(args.pdf)
+    raster = [pi.number for pi in infos if pi.kind == "raster"]
     print(f"{args.pdf}\n{'page':>4} {'kind':<15} {'draw':>6} {'items':>7} "
-          f"{'colors':>7} {'imgs':>5} {'img%':>6}")
+          f"{'colors':>7} {'imgs':>5} {'img%':>6} {'big%':>6}")
     for pi in infos:
-        star = " *" if pi.number in figs else ""
+        mark = " *" if pi.number in figs else (" R" if pi.number in raster else "")
         print(f"{pi.number:>4} {pi.kind:<15} {pi.n_drawings:>6} {pi.n_curve_items:>7} "
-              f"{pi.n_stroke_colors:>7} {pi.n_images:>5} {pi.image_area_frac*100:>5.0f}%{star}")
-    print(f"\nFigure-page candidates (*): {figs or 'none'}")
+              f"{pi.n_stroke_colors:>7} {pi.n_images:>5} {pi.image_area_frac*100:>5.0f}% "
+              f"{pi.largest_image_frac*100:>5.0f}%{mark}")
+    print(f"\nVector figure candidates (*): {figs or 'none'}")
+    print(f"Raster figure candidates (R): {raster or 'none'}")
+    if figs:
+        print(f"\nNext: cvdigitize extract \"{args.pdf}\"")
+    elif raster:
+        print(f"\nNext: cvdigitize extract \"{args.pdf}\" --page {raster[0]}   "
+              f"(rasterized figure — panels & ticks auto-detected)")
     return 0
 
 
@@ -141,7 +150,8 @@ def _process_curves(curves, calib, resample_n):
         if resample_n and len(data) > 2:
             data = resample_arclength(data, n=resample_n)
         out.append({"group": cg, "data": data, "xlab": xlab, "ylab": ylab,
-                    "xunit": xunit, "yunit": yunit})
+                    "xunit": xunit, "yunit": yunit,
+                    "loopiness": round(loop_metrics(data)["loopiness"], 3)})
     return out
 
 
@@ -335,6 +345,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
     report = {"pdf": pdf, "page": page, "panels_grid": [1, 1], "calibrated": calib is not None,
              "curves": [{"panel": plabel, "name": name, "color": plabel, "rgb": [0, 0, 0],
                         "n_points": len(data), "units": [xunit, yunit],
+                        "loopiness": round(loop_metrics(data)["loopiness"], 3),
                         "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}}]}
     with open(os.path.join(rdir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
@@ -425,6 +436,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             report["curves"].append({
                 "panel": plabel, "name": name, "color": cg.name, "rgb": list(cg.rgb),
                 "n_points": len(pc["data"]), "units": [pc["xunit"], pc["yunit"]],
+                "loopiness": pc["loopiness"],
                 "files": {k: os.path.relpath(v, out_dir) for k, v in paths.items()},
             })
             total += 1
@@ -440,6 +452,119 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         print("Tip: run `python -m cvdigitize grid "
               f"\"{pdf}\" --page {page}` to read axis anchors and build a calibration JSON.")
     return 0
+
+
+def cmd_batch(args):
+    """Run over every PDF in a folder and build a gallery index.html.
+
+    A survey tool: for each PDF it classifies the pages, auto-picks a figure,
+    attempts an uncalibrated extraction, and records how many curves came out.
+    Great for testing the tool across many papers at once and seeing at a
+    glance which figures are vector vs raster and what was recovered.
+    """
+    import base64
+    import glob
+
+    pdfs = sorted(glob.glob(os.path.join(args.dir, "*.pdf")))
+    if not pdfs:
+        print(f"No PDFs found in {args.dir}")
+        return 1
+    out_dir = args.out or os.path.join("data", "out", "_batch")
+    os.makedirs(out_dir, exist_ok=True)
+
+    def embed(path):
+        try:
+            with open(path, "rb") as f:
+                return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        except OSError:
+            return ""
+
+    rows = []
+    summary = []
+    for pdf in pdfs:
+        stem = os.path.splitext(os.path.basename(pdf))[0]
+        try:
+            infos = classify_pdf(pdf)
+            vec = find_figure_pages(pdf)
+            ras = [pi.number for pi in infos if pi.kind == "raster"]
+            page, kind = _auto_page(pdf)
+            paper_out = os.path.join(out_dir, stem)
+            n_curves, overlay, note, best_loop = 0, "", "", 0.0
+            try:
+                a = argparse.Namespace(
+                    pdf=pdf, page=page, panels="1x1", panel=None, calibration=None,
+                    resample=800, min_points=60, figure=None, scan_rate=None,
+                    no_yaml=True, out=paper_out, raster_panel=(0 if kind == "raster" else None),
+                    x_ticks=None, y_ticks=None, x_unit=None, y_unit=None)
+                _run_extract_quiet(a)
+                rep_path = os.path.join(paper_out, "report.json")
+                if os.path.exists(rep_path):
+                    with open(rep_path) as f:
+                        rep = json.load(f)
+                    n_curves = len(rep["curves"])
+                    loops = [c.get("loopiness", 0.0) for c in rep["curves"]]
+                    best_loop = max(loops) if loops else 0.0
+                for cand in glob.glob(os.path.join(paper_out, "**", "overlay.png"), recursive=True):
+                    overlay = cand
+                    break
+            except Exception as e:  # keep the batch going
+                note = f"extract error: {type(e).__name__}"
+            # Loopiness gauges CV-likeness: closed loops enclosing area score high;
+            # schematic lines / Nyquist arcs / axis fragments score low.
+            conf = "likely CV" if best_loop >= 0.15 else ("maybe" if best_loop >= 0.05 else "unlikely CV")
+            conf_color = {"likely CV": "#137333", "maybe": "#b26a00", "unlikely CV": "#a50e0e"}[conf]
+            summary.append((stem, kind, len(vec), len(ras), n_curves, best_loop, conf, note))
+            rows.append((best_loop, f"""
+            <div class="card">
+              <h3>{stem}</h3>
+              <p class="meta">{len(infos)} pages · vector figs: {len(vec)} · raster figs: {len(ras)}
+                 · page {page} ({kind}) · <b>{n_curves}</b> candidate curves
+                 · <b style="color:{conf_color}">{conf}</b> (loop score {best_loop:.2f}){(' · '+note) if note else ''}</p>
+              {'<img src="'+embed(overlay)+'">' if overlay else '<p class="none">no overlay</p>'}
+            </div>"""))
+            print(f"  {stem:48s} {kind:14s} vec={len(vec)} ras={len(ras)} "
+                  f"curves={n_curves} loop={best_loop:.2f} [{conf}] {note}")
+        except Exception as e:
+            summary.append((stem, "ERROR", 0, 0, 0, str(e)))
+            print(f"  {stem:52s} ERROR {e}")
+
+    total_curves = sum(s[4] for s in summary)
+    html = f"""<!doctype html><meta charset="utf-8"><title>cvdigitize batch — {os.path.basename(args.dir)}</title>
+<style>
+body{{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:2rem;color:#1a1a1a;background:#fafafa}}
+h1{{margin-bottom:.2rem}} .sub{{color:#666}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:1rem;margin-top:1.5rem}}
+.card{{background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}}
+.card h3{{margin:.1rem 0;font-size:.95rem;word-break:break-all}} .meta{{color:#666;font-size:.8rem}}
+img{{max-width:100%;border:1px solid #eee;margin-top:.5rem}} .none{{color:#bbb;font-style:italic}}
+</style>
+<h1>cvdigitize — batch survey</h1>
+<p class="sub">{len(pdfs)} PDFs from <code>{args.dir}</code> · {total_curves} candidate curves ·
+sorted by CV-likeness (loop score). "candidate curves" are unverified — the tool
+extracts from whatever figure it auto-picks; a low loop score usually means the
+page is a schematic/Nyquist/other plot, not a CV.</p>
+<div class="grid">{''.join(r for _, r in sorted(rows, key=lambda t: t[0], reverse=True))}</div>"""
+    idx = os.path.join(out_dir, "index.html")
+    with open(idx, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"\nProcessed {len(pdfs)} PDFs · {total_curves} curves total.")
+    print(f"Gallery: {idx}")
+    return 0
+
+
+def _run_extract_quiet(args):
+    """Invoke the right extract path, swallowing its stdout (used by batch)."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        pdf, stem = args.pdf, os.path.splitext(os.path.basename(args.pdf))[0]
+        os.makedirs(args.out, exist_ok=True)
+        infos = classify_pdf(pdf)
+        kind = infos[args.page].kind if args.page < len(infos) else "sparse"
+        if kind == "raster":
+            _extract_raster(args, pdf, args.page, stem, args.out)
+        else:
+            _extract_vector(args, pdf, args.page, stem, args.out)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -484,10 +609,15 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--zoom", type=float, default=3.0)
     pg.add_argument("--out", default=None)
     pg.set_defaults(func=cmd_grid)
+
+    pb = sub.add_parser("batch", help="run over a folder of PDFs; build a gallery")
+    pb.add_argument("dir", help="folder containing PDFs")
+    pb.add_argument("--out", default=None, help="output dir (default data/out/_batch)")
+    pb.set_defaults(func=cmd_batch)
     return p
 
 
-_KNOWN_COMMANDS = {"info", "extract", "grid", "-h", "--help"}
+_KNOWN_COMMANDS = {"info", "extract", "grid", "batch", "-h", "--help"}
 
 
 def _with_implicit_extract(argv: list[str]) -> list[str]:

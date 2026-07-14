@@ -20,8 +20,9 @@ class PageInfo:
     n_curve_items: int
     n_stroke_colors: int
     n_images: int
-    image_area_frac: float
-    kind: str            # "vector-curves" | "raster" | "sparse"
+    image_area_frac: float          # total image coverage
+    largest_image_frac: float       # single biggest image coverage
+    kind: str                       # "vector-curves" | "raster" | "sparse"
 
 
 def _page_curve_stats(page) -> tuple[int, int, set]:
@@ -37,32 +38,40 @@ def _page_curve_stats(page) -> tuple[int, int, set]:
     return len(drawings), n_items, colors
 
 
-def _image_area_fraction(page) -> float:
+def _image_area_fractions(page) -> tuple[float, float]:
+    """Return (total, largest) image coverage as fractions of the page area."""
     page_area = abs(page.rect.width * page.rect.height) or 1.0
-    covered = 0.0
+    total = 0.0
+    largest = 0.0
     for img in page.get_images(full=True):
         try:
             for r in page.get_image_rects(img[0]):
-                covered += abs(r.width * r.height)
+                a = abs(r.width * r.height)
+                total += a
+                largest = max(largest, a)
         except Exception:
             pass
-    return min(1.0, covered / page_area)
+    return min(1.0, total / page_area), min(1.0, largest / page_area)
 
 
 def classify_page(page) -> PageInfo:
     n_draw, n_items, colors = _page_curve_stats(page)
     n_images = len(page.get_images(full=True))
-    img_frac = _image_area_fraction(page)
+    img_frac, largest_frac = _image_area_fractions(page)
 
     # Heuristic: many vector line/curve items with >=2 stroke colours -> real
-    # vector plot. A page dominated by a large raster with few vectors -> raster.
+    # vector plot. Otherwise, a page carrying a non-trivial embedded image (a
+    # single sizable one, or several panels totalling a good fraction) with
+    # little vector content -> a raster figure. A modest 12% single-image
+    # threshold catches real-paper figures that occupy only part of a page.
     if n_items >= 500 and len(colors) >= 2:
         kind = "vector-curves"
-    elif img_frac > 0.25 and n_items < 500:
+    elif n_items < 500 and (img_frac > 0.22 or largest_frac >= 0.12):
         kind = "raster"
     else:
         kind = "sparse"
-    return PageInfo(page.number, n_draw, n_items, len(colors), n_images, img_frac, kind)
+    return PageInfo(page.number, n_draw, n_items, len(colors), n_images,
+                    img_frac, largest_frac, kind)
 
 
 def classify_pdf(pdf_path: str) -> list[PageInfo]:
@@ -70,6 +79,11 @@ def classify_pdf(pdf_path: str) -> list[PageInfo]:
     infos = [classify_page(doc[p]) for p in range(doc.page_count)]
     doc.close()
     return infos
+
+
+def find_raster_figure_pages(pdf_path: str) -> list[int]:
+    """Pages whose figures are raster (image) rather than vector curves."""
+    return [pi.number for pi in classify_pdf(pdf_path) if pi.kind == "raster"]
 
 
 def render_page(pdf_path: str, page_number: int, zoom: float = 3.0) -> np.ndarray:

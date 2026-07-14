@@ -12,6 +12,9 @@ venv/
 # Generated outputs (kept out of history; regenerate with the scripts/CLI)
 data/out/
 
+# Downloaded test corpus (large; fetch with scripts, not committed)
+data/corpus/
+
 # OS
 Thumbs.db
 .DS_Store
