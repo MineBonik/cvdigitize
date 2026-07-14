@@ -95,6 +95,16 @@ def order_curve(polylines: list[np.ndarray]) -> np.ndarray:
     repeatedly appends the nearest remaining sub-path endpoint, flipping that
     sub-path when it is joined by its tail. This recovers the sweep order even
     though the PDF stores the segments shuffled.
+
+    Note: this always incorporates every input sub-path — it trusts its
+    caller (``vector_extract``'s colour/shape filters, ``keep_main_components``)
+    to have already excluded anything that isn't really part of the curve.
+    An earlier version tried to additionally reject "implausibly large"
+    gaps here as a second line of defence, but a curve's own legitimate
+    internal gaps and a truly unrelated shape's distance turned out not to be
+    reliably separable by any single threshold — it silently truncated good
+    curves more often than it caught bad ones. Fix contamination at the
+    source (shape/colour filtering) instead of guessing distances here.
     """
     segs = [np.asarray(p, dtype=float) for p in polylines if len(p) >= 2]
     if not segs:
@@ -127,6 +137,7 @@ def order_curve(polylines: list[np.ndarray]) -> np.ndarray:
                 best_d, best_j, best_flip = ds, j, False
             if de < best_d:
                 best_d, best_j, best_flip = de, j, True
+
         seg = segs[best_j][::-1] if best_flip else segs[best_j]
         chain.append(seg)
         used[best_j] = True
