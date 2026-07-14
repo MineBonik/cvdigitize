@@ -241,7 +241,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
 
     region = regions[0]
     results = extract_all_panel_curves(pdf, page, region.bbox)
-    results = [r for r in results if len(r["polyline"]) >= 20]
+    results = [r for r in results if len(r["polyline"]) >= 20 or r.get("curves")]
     if not results:
         print(f"No traceable curve found in the image on page {page}.")
         return 1
@@ -289,7 +289,8 @@ def _extract_raster(args, pdf, page, stem, out_dir):
         print(f"Preview with panel numbers: {preview}\n")
         for i, r in enumerate(results):
             xt, yt = r["ticks"]["x_ticks"], r["ticks"]["y_ticks"]
-            print(f"  [{i}] {len(r['polyline'])} curve points, "
+            cnames = ", ".join(c["name"] for c in r.get("curves", [])) or "none"
+            print(f"  [{i}] curves: {cnames} · "
                   f"{len(xt)} x-ticks / {len(yt)} y-ticks auto-detected"
                   + (f"  (see calib_helper_panel{i}.png for the tick numbers)"
                      if (xt and yt) else ""))
@@ -326,62 +327,79 @@ def _extract_raster(args, pdf, page, stem, out_dir):
 
     # Ticks are detected in the same pixel space as `image`/`polyline_px` (not
     # the PDF-point `polyline`) — calibrate and overlay against that directly.
-    poly = r["polyline_px"]
-    if calib is not None:
-        data = calib.apply(poly)
-        xlab, ylab, xunit, yunit = calib.x_label, calib.y_label, calib.x_unit, calib.y_unit
-    else:
-        x, y = poly[:, 0], poly[:, 1]
-        xr, yr = (x.max() - x.min()) or 1, (y.max() - y.min()) or 1
-        data = np.column_stack([(x - x.min()) / xr, 1 - (y - y.min()) / yr])
-        xlab, ylab, xunit, yunit = "x_norm", "y_norm", "0..1", "0..1 (up=+)"
-    if args.resample and len(data) > 2:
-        data = resample_arclength(data, n=args.resample)
+    # One panel can hold several colour-coded curves (split by hue) plus a
+    # dark one; fall back to the primary dark trace when splitting found none.
+    curve_list = r.get("curves") or [
+        {"name": "curve", "rgb": (0.1, 0.1, 0.1), "polyline_px": r["polyline_px"]}]
 
     plabel = f"r{idx}"
     pdir = os.path.join(rdir, f"panel_{plabel}")
     os.makedirs(pdir, exist_ok=True)
 
+    report = {"pdf": pdf, "page": page, "panels_grid": [1, 1],
+              "calibrated": calib is not None, "curves": []}
+    processed = []
+    for c in curve_list:
+        poly = c["polyline_px"]
+        if calib is not None:
+            data = calib.apply(poly)
+            xlab, ylab, xunit, yunit = calib.x_label, calib.y_label, calib.x_unit, calib.y_unit
+        else:
+            x, y = poly[:, 0], poly[:, 1]
+            xr, yr = (x.max() - x.min()) or 1, (y.max() - y.min()) or 1
+            data = np.column_stack([(x - x.min()) / xr, 1 - (y - y.min()) / yr])
+            xlab, ylab, xunit, yunit = "x_norm", "y_norm", "0..1", "0..1 (up=+)"
+        if args.resample and len(data) > 2:
+            data = resample_arclength(data, n=args.resample)
+        processed.append((c, data, xlab, ylab, xunit, yunit))
+
     fig, ax = plt.subplots(figsize=(11, 13)); ax.imshow(r["image"]); ax.axis("off")
     x0, y0, x1, y1 = r["frame_px"]
     ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
                                edgecolor="lime", linewidth=2))
-    ax.plot(poly[:, 0], poly[:, 1], color="red", lw=1.2, label="extracted")
+    for c, *_ in processed:
+        ax.plot(c["polyline_px"][:, 0], c["polyline_px"][:, 1],
+                color=_plot_color(c["rgb"]), lw=1.2, label=c["name"])
     ax.legend(loc="upper right", fontsize=8)
     ax.set_title(f"{stem} p{page} panel {plabel} (raster)")
     fig.tight_layout(); fig.savefig(os.path.join(pdir, "overlay.png"), dpi=100); plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(data[:, 0], data[:, 1], color="black", lw=1.0)
+    for c, data, xlab, ylab, xunit, yunit in processed:
+        ax.plot(data[:, 0], data[:, 1], color=_plot_color(c["rgb"]), lw=1.0,
+                label=c["name"])
     ax.set_xlabel(f"{xlab} / {xunit}"); ax.set_ylabel(f"{ylab} / {yunit}")
-    ax.set_title(("Digitized curve" if calib else "Digitized curve (normalised)")
+    ax.set_title(("Digitized curves" if calib else "Digitized curves (normalised)")
                 + f" — panel {plabel}")
-    ax.grid(alpha=0.2)
+    ax.legend(fontsize=8); ax.grid(alpha=0.2)
     fig.tight_layout(); fig.savefig(os.path.join(pdir, "curves.png"), dpi=110); plt.close(fig)
 
-    name = f"{stem}_{plabel}"
-    meta = CurveMeta(name=name, figure=(args.figure or f"panel {plabel}"), curve=plabel,
-                     scan_rate=args.scan_rate or "", x_label=xlab, x_unit=xunit,
-                     y_label=ylab, y_unit=yunit, source_pdf=pdf, method="digitized",
-                     comment="auto-extracted from a rasterized/scanned figure (colour-mask trace)"
-                             + ("" if calib else "; UNCALIBRATED (normalised coords)"))
-    if calib is not None:
-        paths = write_datapackage(pdir, data, meta, yaml=not args.no_yaml)
-    else:
-        p = os.path.join(pdir, name + ".csv")
-        write_csv(p, data, meta)
-        paths = {"csv": p}
+    for c, data, xlab, ylab, xunit, yunit in processed:
+        name = f"{stem}_{plabel}_{c['name']}" if len(processed) > 1 else f"{stem}_{plabel}"
+        meta = CurveMeta(name=name, figure=(args.figure or f"panel {plabel}"),
+                         curve=c["name"], scan_rate=args.scan_rate or "",
+                         x_label=xlab, x_unit=xunit, y_label=ylab, y_unit=yunit,
+                         source_pdf=pdf, method="digitized",
+                         comment="auto-extracted from a rasterized/scanned figure (colour-mask trace)"
+                                 + ("" if calib else "; UNCALIBRATED (normalised coords)"))
+        if calib is not None:
+            paths = write_datapackage(pdir, data, meta, yaml=not args.no_yaml)
+        else:
+            p = os.path.join(pdir, name + ".csv")
+            write_csv(p, data, meta)
+            paths = {"csv": p}
+        report["curves"].append({
+            "panel": plabel, "name": name, "color": c["name"], "rgb": list(c["rgb"]),
+            "n_points": len(data), "units": [xunit, yunit],
+            "loopiness": round(loop_metrics(data)["loopiness"], 3),
+            "calibration": ("assisted-ticks" if calib is not None else "none"),
+            "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}})
 
-    report = {"pdf": pdf, "page": page, "panels_grid": [1, 1], "calibrated": calib is not None,
-             "curves": [{"panel": plabel, "name": name, "color": plabel, "rgb": [0, 0, 0],
-                        "n_points": len(data), "units": [xunit, yunit],
-                        "loopiness": round(loop_metrics(data)["loopiness"], 3),
-                        "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}}]}
     with open(os.path.join(rdir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     _write_html_report(rdir, stem, report)
 
-    print(f"Extracted 1 curve from {stem} p{page} panel {plabel} "
+    print(f"Extracted {len(processed)} curve(s) from {stem} p{page} panel {plabel} "
           f"({'calibrated' if calib else 'UNCALIBRATED - pass --x-ticks/--y-ticks for real units'}).")
     print(f"Output: {rdir}")
     return 0
