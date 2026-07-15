@@ -364,6 +364,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
     xt, yt = r["ticks"]["x_ticks"], r["ticks"]["y_ticks"]
 
     calib = None
+    calib_mode = "none"
     if args.x_ticks or args.y_ticks:
         if not (args.x_ticks and args.y_ticks):
             print("Pass both --x-ticks and --y-ticks to calibrate (or neither for a normalised curve).")
@@ -379,6 +380,23 @@ def _extract_raster(args, pdf, page, stem, out_dir):
             y_anchor1=(yt[0], y_lo), y_anchor2=(yt[-1], y_hi),
             x_unit=args.x_unit or "", y_unit=args.y_unit or "",
         )
+        calib_mode = "manual-ticks"
+    elif len(xt) >= 2 and len(yt) >= 2:
+        # No values typed: if a Tesseract OCR engine is installed, read the
+        # four outer tick labels automatically (zero-typing calibration).
+        from . import ocr
+        if ocr.available():
+            from .raster_extract import crop_tick_labels
+            crops = crop_tick_labels(r["image"], r["frame_px"], r["ticks"])
+            xp, yp = ocr.read_axis_values(crops)
+            if xp and yp:
+                calib = calibration_from_anchors(
+                    x_anchor1=(xt[0], xp[0]), x_anchor2=(xt[-1], xp[1]),
+                    y_anchor1=(yt[0], yp[0]), y_anchor2=(yt[-1], yp[1]),
+                    x_unit=args.x_unit or "", y_unit=args.y_unit or "")
+                calib_mode = "ocr"
+                print(f"OCR read axis labels (VERIFY): x=[{xp[0]:g}, {xp[1]:g}], "
+                      f"y=[{yp[0]:g}, {yp[1]:g}]. Pass --x-ticks/--y-ticks to override.")
 
     # Ticks are detected in the same pixel space as `image`/`polyline_px` (not
     # the PDF-point `polyline`) — calibrate and overlay against that directly.
@@ -446,7 +464,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
             "panel": plabel, "name": name, "color": c["name"], "rgb": list(c["rgb"]),
             "n_points": len(data), "units": [xunit, yunit],
             "loopiness": round(loop_metrics(data)["loopiness"], 3),
-            "calibration": ("assisted-ticks" if calib is not None else "none"),
+            "calibration": calib_mode,
             "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}})
 
     with open(os.path.join(rdir, "report.json"), "w", encoding="utf-8") as f:
