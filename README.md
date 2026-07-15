@@ -87,6 +87,10 @@ hand-digitized reference:
   units (V vs RHE, µA cm⁻²)
 - point spacing **~10× more uniform** (CoV 2.4–8.4 → 0.26–0.69) with **zero**
   duplicate-potential points — the "data is not raw" issue Albert flagged, fixed.
+- `--resample-mode uniform-E` goes further: it resamples each scan branch on a
+  uniform **potential** grid (CoV → 0, potentiostat-like), exactly the "equal
+  spacing of points" Albert described for raw data, while keeping the loop
+  two-valued (anodic + cathodic).
 
 **Synthetic vector PDF (known ground truth).** 3 curves, different layout/axes:
 mean normalised Chamfer **0.005** vs truth.
