@@ -50,7 +50,8 @@ from .ingest import classify_pdf, render_page
 from .vector_extract import (extract_color_groups, extract_panels,
                              find_figure_pages, panel_label)
 from .postprocess import (order_curve, dedupe, resample_arclength,
-                          keep_main_components, loop_metrics)
+                          resample_uniform_potential, keep_main_components,
+                          loop_metrics)
 from .calibrate import Calibration, calibration_from_anchors
 from .package import write_datapackage, write_csv, CurveMeta
 from .raster_extract import (find_image_regions, extract_all_panel_curves,
@@ -138,7 +139,17 @@ def cmd_grid(args):
     return 0
 
 
-def _process_curves(curves, calib, resample_n):
+def _resample(data, n, mode):
+    """Resample a digitized loop by arc length (smooth) or uniform potential
+    (potentiostat-like, per scan branch)."""
+    if not n or len(data) <= 2:
+        return data
+    if mode == "uniform-E":
+        return resample_uniform_potential(data, n_per_branch=max(2, n // 2))
+    return resample_arclength(data, n=n)
+
+
+def _process_curves(curves, calib, resample_n, resample_mode="arclength"):
     """order -> (calibrate) -> resample each curve; return list of dicts."""
     out = []
     for cg in curves:
@@ -153,8 +164,7 @@ def _process_curves(curves, calib, resample_n):
             xr, yr = x.max() - x.min() or 1, y.max() - y.min() or 1
             data = np.column_stack([(x - x.min()) / xr, 1 - (y - y.min()) / yr])
             xlab, ylab, xunit, yunit = "x_norm", "y_norm", "0..1", "0..1 (up=+)"
-        if resample_n and len(data) > 2:
-            data = resample_arclength(data, n=resample_n)
+        data = _resample(data, resample_n, resample_mode)
         out.append({"group": cg, "data": data, "xlab": xlab, "ylab": ylab,
                     "xunit": xunit, "yunit": yunit,
                     "loopiness": round(loop_metrics(data)["loopiness"], 3)})
@@ -349,8 +359,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
             xr, yr = (x.max() - x.min()) or 1, (y.max() - y.min()) or 1
             data = np.column_stack([(x - x.min()) / xr, 1 - (y - y.min()) / yr])
             xlab, ylab, xunit, yunit = "x_norm", "y_norm", "0..1", "0..1 (up=+)"
-        if args.resample and len(data) > 2:
-            data = resample_arclength(data, n=args.resample)
+        data = _resample(data, args.resample, getattr(args, "resample_mode", "arclength"))
         processed.append((c, data, xlab, ylab, xunit, yunit))
 
     fig, ax = plt.subplots(figsize=(11, 13)); ax.imshow(r["image"]); ax.axis("off")
@@ -547,7 +556,8 @@ def _extract_vector(args, pdf, page, stem, out_dir):
                     plt.close(fig)
         modes_seen.append(mode)
 
-        processed = _process_curves(curves, calib, args.resample)
+        processed = _process_curves(curves, calib, args.resample,
+                                     getattr(args, "resample_mode", "arclength"))
 
         # overlay this panel's curves on the original render
         fig, ax = plt.subplots(figsize=(11, 13)); ax.imshow(img); ax.axis("off")
@@ -670,7 +680,8 @@ def cmd_batch(args):
             try:
                 a = argparse.Namespace(
                     pdf=pdf, page=page, panels="auto", panel=None, calibration=None,
-                    resample=800, min_points=60, figure=None, scan_rate=None,
+                    resample=800, resample_mode="arclength", min_points=60,
+                    figure=None, scan_rate=None,
                     no_yaml=True, no_autocalib=False, out=paper_out,
                     raster_panel=(0 if kind == "raster" else None),
                     x_ticks=None, y_ticks=None, x_unit=None, y_unit=None)
@@ -765,7 +776,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "like 2x2, or 1x1 for the whole figure as one panel")
     pe.add_argument("--panel", default=None, help="single panel letter a,b,c,... (default all)")
     pe.add_argument("--calibration", default=None, help="calibration JSON for real units")
-    pe.add_argument("--resample", type=int, default=1000, help="arc-length points (0=off)")
+    pe.add_argument("--resample", type=int, default=1000, help="resample point count (0=off)")
+    pe.add_argument("--resample-mode", choices=["arclength", "uniform-E"], default="arclength",
+                    help="arclength: even along the curve (smooth). uniform-E: even in "
+                         "potential per anodic/cathodic branch — potentiostat-like 'raw' sampling")
     pe.add_argument("--min-points", type=int, default=60, help="min points per curve")
     pe.add_argument("--figure", default=None, help="figure label for metadata")
     pe.add_argument("--scan-rate", default=None, help="e.g. '50 mV/s'")

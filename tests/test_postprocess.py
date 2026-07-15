@@ -4,7 +4,7 @@ import pytest
 
 from cvdigitize.postprocess import (
     order_curve, dedupe, split_branches, resample_arclength,
-    resample_uniform_x, keep_main_components,
+    resample_uniform_x, resample_uniform_potential, keep_main_components,
 )
 
 
@@ -88,6 +88,24 @@ def test_resample_uniform_x_grid():
     dx = np.diff(out[:, 0])
     assert np.allclose(dx, dx[0])         # uniform in x
     assert out[-1, 1] == pytest.approx(2.0, abs=1e-6)
+
+
+def test_resample_uniform_potential_branches_are_uniform_in_E():
+    loop = make_loop(300)
+    out = resample_uniform_potential(loop, n_per_branch=200)
+    assert len(out) == 400
+    fwd, rev = out[:200], out[200:]
+    # anodic branch rises in E, cathodic falls; each uniform in E
+    assert fwd[0, 0] < fwd[-1, 0]
+    assert rev[0, 0] > rev[-1, 0]
+    for branch in (fwd, rev):
+        dE = np.abs(np.diff(branch[:, 0]))
+        assert np.std(dE) / np.mean(dE) < 1e-6      # perfectly even in potential
+    # loop stays two-valued: at a mid potential both branches give a current
+    mid = 0.5
+    j_fwd = np.interp(mid, fwd[:, 0], fwd[:, 1])
+    j_rev = np.interp(mid, rev[::-1, 0], rev[::-1, 1])
+    assert abs(j_fwd - j_rev) > 0.1                 # hysteresis preserved
 
 
 def test_keep_main_components_drops_stray_swatch():

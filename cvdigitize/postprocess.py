@@ -257,6 +257,29 @@ def resample_uniform_x(branch: np.ndarray, n: int) -> np.ndarray:
     return np.column_stack([grid, yg])
 
 
+def resample_uniform_potential(loop: np.ndarray, n_per_branch: int = 500
+                               ) -> np.ndarray:
+    """Resample a full CV loop onto a uniform potential grid, per scan branch.
+
+    This is the sampling a real potentiostat produces — equal steps in E (i.e.
+    equal steps in time at constant scan rate), which is what Albert asked for
+    in the thread ("for rawdata I would expect equal spacing of points"). The
+    loop is split at its potential turning point into the anodic and cathodic
+    scans, each is resampled on its own uniform-E grid, and they are rejoined
+    into one closed loop (anodic low->high, then cathodic high->low). The two
+    branches keep the loop two-valued in E, unlike a naive single-valued
+    resample. ``x`` is the potential axis of ``loop`` (calibrated E, or the
+    normalised x when uncalibrated).
+    """
+    loop = dedupe(loop)
+    if len(loop) < 4:
+        return loop
+    forward, reverse = split_branches(loop)
+    fwd = resample_uniform_x(forward, n_per_branch)          # ascending E
+    rev = resample_uniform_x(reverse, n_per_branch)[::-1]    # back down in E
+    return np.vstack([fwd, rev])
+
+
 def clean_cv(polylines: list[np.ndarray], *, n_arclength: int = 1000,
              drop_stray: bool = True) -> dict[str, np.ndarray]:
     """Full loop clean-up from raw sub-paths.
