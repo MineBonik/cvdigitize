@@ -194,3 +194,56 @@ def legend_for_panel(legend: dict[str, dict[str, str]], panel: str
     if not legend:
         return {}
     return {**legend.get("", {}), **legend.get(panel.lower(), {})}
+
+
+# --------------------------------------------------------------------------- #
+# In-plot legend: colour swatch -> adjacent text label (text-layer legends)
+# --------------------------------------------------------------------------- #
+def _is_swatch(pl, *, max_pts: int = 10, max_w: float = 46.0, max_h: float = 6.0):
+    """A legend swatch is a short, near-horizontal line segment."""
+    if len(pl) > max_pts:
+        return None
+    xs, ys = pl[:, 0], pl[:, 1]
+    if (xs.max() - xs.min()) > max_w or (ys.max() - ys.min()) > max_h:
+        return None
+    if (xs.max() - xs.min()) < 3:      # too tiny to be a swatch (a dot/tick)
+        return None
+    return (float(xs.max()), float((ys.min() + ys.max()) / 2))  # (right x, mid y)
+
+
+def detect_plot_legend(pdf_path: str, page_number: int, color_groups,
+                       *, max_dx: float = 45.0, y_tol: float = 5.0
+                       ) -> dict[str, str]:
+    """Map curve colour -> label from an in-plot text-layer legend.
+
+    For each colour group, look for a short horizontal legend swatch and the
+    text word immediately to its right at the same height. Only a swatch with
+    an aligned neighbouring word yields a mapping, which makes this robust:
+    stray short curve segments (no word beside them) are silently ignored.
+    Complements the caption legend for figures whose colour key sits inside
+    the axes (matplotlib default) rather than in the caption text.
+    """
+    doc = fitz.open(pdf_path)
+    words = doc[page_number].get_text("words")
+    doc.close()
+    if not words:
+        return {}
+
+    out: dict[str, str] = {}
+    for g in color_groups:
+        best_label, best_dx = None, 1e9
+        for pl in g.polylines:
+            sw = _is_swatch(pl)
+            if sw is None:
+                continue
+            sxr, scy = sw
+            for w in words:
+                wx0, wy0, wx1, wy1, txt = w[0], w[1], w[2], w[3], w[4]
+                wcy = (wy0 + wy1) / 2
+                dx = wx0 - sxr
+                if -2 <= dx <= max_dx and abs(wcy - scy) <= y_tol:
+                    if dx < best_dx and _clean(txt).strip():
+                        best_dx, best_label = dx, _clean(txt).strip()
+        if best_label:
+            out[g.name] = best_label[:40]
+    return out

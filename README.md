@@ -77,6 +77,29 @@ rather than types. Everything is flagged auto-extracted and never overrides a
 value you pass with `--scan-rate` etc. On the rizo paper this recovers
 `50 mV/s`, `0.1 M HClO4` / `0.1 M NaOH`, and `RHE` with no input.
 
+Each curve is also named by **what its colour is**, mapped either from a
+caption legend ("black line: 0.10 M HClO4, red line: …", scoped per panel) or
+an in-plot text-layer legend (colour swatch + adjacent label) — so the echemdb
+`curve` field says `black: 0.10 M HClO4`, not just `black`.
+
+### Picking the CV out of a busy figure
+
+Every curve gets a **loop score** (a closed CV loop encloses area; a
+schematic / micrograph / Nyquist arc / spectrum does not). `--cv-only` keeps
+just the CV-like panels of a multi-panel figure, and `batch` chooses each
+paper's most CV-like figure page automatically. This is a triage signal, not a
+perfect classifier — a genuinely peak-shaped CV can score low — so it never
+deletes data silently, only selects/orders.
+
+### Not done: true OCR of tick labels
+
+Reading the axis tick *numbers* on a raster figure would need a real OCR engine
+(tesseract/easyocr), which isn't available in this environment. A self-contained
+template matcher was prototyped and rejected: it isn't reliable enough even on
+matplotlib's own font, and a mis-read tick would silently corrupt the
+calibration. Instead the tool auto-detects tick *positions* and crops zoomed
+label images, so you read two numbers per axis — reliable, no silent errors.
+
 ## Verified results
 
 **Real paper — `rizo_2025_analysis_351` (ACS Electrochem 2025), vector figure.**
@@ -184,7 +207,12 @@ cvdigitize extract "data\in\paper.pdf" --page 5
 cvdigitize extract "data\in\paper.pdf" --page 5 --raster-panel 1 `
     --x-ticks="-0.8,0.2" --y-ticks="25,-50" --x-unit "V vs Ag/AgCl" --y-unit "uA"
 
-# 7) SURVEY a whole folder of PDFs at once -> gallery sorted by CV-likeness
+# 7) keep only the CV panels of a multi-panel figure (skip SEM / spectra /
+#    Nyquist / schematics by their low loop score)
+cvdigitize extract "data\in\paper.pdf" --cv-only
+
+# 8) SURVEY a whole folder of PDFs at once -> gallery sorted by CV-likeness
+#    (each paper's most CV-like figure page is chosen automatically)
 cvdigitize batch "data\corpus"
 #   -> data\out\_batch\index.html : one card per paper (figure type, candidate
 #      curves, loop-score confidence). Great for triaging many papers fast.

@@ -95,3 +95,44 @@ def test_curve_legend_empty():
     from cvdigitize.metadata import parse_curve_legend
     assert parse_curve_legend("") == {}
     assert parse_curve_legend("A plain caption with no colours.") == {}
+
+
+def test_detect_plot_legend_matches_swatch_to_text(tmp_path):
+    """A matplotlib legend (colour swatch + label) must map colour->label."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from cvdigitize.vector_extract import extract_color_groups
+    from cvdigitize.metadata import detect_plot_legend
+
+    pdf = str(tmp_path / "leg.pdf")
+    fig, ax = plt.subplots(figsize=(4, 3))
+    t = np.linspace(0, 2 * np.pi, 300)
+    ax.plot(0.3 + 0.2 * np.cos(t), np.sin(t), color=(1, 0, 0), label="Alpha")
+    ax.plot(0.5 + 0.2 * np.cos(t), 0.5 * np.sin(t), color=(0, 0, 1), label="Beta")
+    ax.legend(loc="upper left")
+    fig.savefig(pdf); plt.close(fig)
+
+    groups = extract_color_groups(pdf, 0, min_points=5)
+    leg = detect_plot_legend(pdf, 0, groups)
+    labels = set(leg.values())
+    assert "Alpha" in labels
+    assert "Beta" in labels
+
+
+def test_detect_plot_legend_empty_when_no_legend(tmp_path):
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from cvdigitize.vector_extract import extract_color_groups
+    from cvdigitize.metadata import detect_plot_legend
+
+    pdf = str(tmp_path / "nolegend.pdf")
+    fig, ax = plt.subplots(figsize=(4, 3))
+    t = np.linspace(0, 2 * np.pi, 300)
+    ax.plot(0.3 + 0.2 * np.cos(t), np.sin(t), color="red")
+    fig.savefig(pdf); plt.close(fig)
+    groups = extract_color_groups(pdf, 0, min_points=5)
+    assert detect_plot_legend(pdf, 0, groups) == {}

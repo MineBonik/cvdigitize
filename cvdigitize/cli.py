@@ -96,6 +96,51 @@ def _auto_page(pdf: str) -> tuple[int, str]:
     return 0, (infos[0].kind if infos else "sparse")
 
 
+def _page_cv_score(pdf: str, page: int, kind: str) -> float:
+    """Best CV-likeness (loop score) among a page's curves — no file I/O.
+
+    Used to pick which figure page a paper's batch run should target, instead
+    of blindly taking the first candidate.
+    """
+    try:
+        if kind == "raster":
+            from .raster_extract import find_image_regions, extract_all_panel_curves
+            regions = find_image_regions(pdf, page)
+            if not regions:
+                return 0.0
+            best = 0.0
+            for r in extract_all_panel_curves(pdf, page, regions[0].bbox):
+                for c in r.get("curves", []) or [{"polyline_px": r["polyline_px"]}]:
+                    p = c["polyline_px"]
+                    if len(p) >= 20:
+                        best = max(best, loop_metrics(p)["loopiness"])
+            return best
+        from .vector_extract import detect_panels
+        best = 0.0
+        for panel in detect_panels(pdf, page):
+            for c in panel.curves:
+                loop = dedupe(order_curve(keep_main_components(c.polylines)))
+                best = max(best, loop_metrics(loop)["loopiness"])
+        return best
+    except Exception:
+        return 0.0
+
+
+def _best_figure_page(pdf: str, vec: list[int], ras: list[int],
+                      max_candidates: int = 5) -> tuple[int, str]:
+    """Pick the most CV-like figure page across vector + raster candidates."""
+    cands = [(p, "vector-curves") for p in vec] + [(p, "raster") for p in ras]
+    if not cands:
+        return _auto_page(pdf)
+    cands = cands[:max_candidates]
+    scored = [(_page_cv_score(pdf, p, k), p, k) for p, k in cands]
+    scored.sort(key=lambda t: t[0], reverse=True)
+    best_score, best_page, best_kind = scored[0]
+    if best_score <= 0.0:  # nothing loop-like; fall back to the default heuristic
+        return _auto_page(pdf)
+    return best_page, best_kind
+
+
 def cmd_info(args):
     infos = classify_pdf(args.pdf)
     figs = find_figure_pages(args.pdf)
@@ -445,7 +490,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         fig_meta = extract_figure_metadata(pdf, page, axis_titles=titles)
     except Exception:
         fig_meta = None
-    from .metadata import parse_curve_legend, legend_for_panel
+    from .metadata import parse_curve_legend, legend_for_panel, detect_plot_legend
     curve_legend = parse_curve_legend(fig_meta.caption) if fig_meta else {}
     if fig_meta and not fig_meta.is_empty:
         bits = []
@@ -488,6 +533,20 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         if not panels_list:
             print(f"Panel '{args.panel}' not found (available: "
                   f"{', '.join(l or '(main)' for l, _ in panels_list) or 'none'}).")
+
+    # CV-likeness gate up front (loop score is calibration-invariant, so we can
+    # judge and drop non-CV panels before doing any calibration or file I/O).
+    if getattr(args, "cv_only", False):
+        kept = []
+        for lbl, cs in panels_list:
+            score = max((loop_metrics(dedupe(order_curve(keep_main_components(c.polylines))))
+                         ["loopiness"] for c in cs), default=0.0)
+            if score >= args.cv_threshold:
+                kept.append((lbl, cs))
+            else:
+                print(f"Panel {lbl or '(figure)'}: skipped — loop score {score:.2f} "
+                      f"< {args.cv_threshold} (not CV-like).")
+        panels_list = kept
 
     img = render_page(pdf, page, zoom=3.0)
     report = {"pdf": pdf, "page": page, "panels_grid": grid,
@@ -591,11 +650,17 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             "assisted-ticks": "; calibrated from detected tick marks + user-supplied values",
             "none": "; UNCALIBRATED (normalised coords)",
         }[mode]
-        panel_legend = legend_for_panel(curve_legend, plabel or "")
+        # caption legend takes priority; the in-plot text-layer legend (colour
+        # swatch + adjacent label) fills colours the caption did not describe.
+        try:
+            plot_legend = detect_plot_legend(pdf, page, curves)
+        except Exception:
+            plot_legend = {}
+        panel_legend = {**plot_legend, **legend_for_panel(curve_legend, plabel or "")}
         for pc in processed:
             cg = pc["group"]
             name = f"{stem}_" + (f"{plabel}_" if plabel else "") + cg.name
-            # if the caption says what this colour is, name the curve by it
+            # if the caption or in-plot legend says what this colour is, use it
             sample = panel_legend.get(cg.name)
             curve_label = f"{cg.name}: {sample}" if sample else cg.name
             meta = CurveMeta(
@@ -674,14 +739,14 @@ def cmd_batch(args):
             infos = classify_pdf(pdf)
             vec = find_figure_pages(pdf)
             ras = [pi.number for pi in infos if pi.kind == "raster"]
-            page, kind = _auto_page(pdf)
+            page, kind = _best_figure_page(pdf, vec, ras)
             paper_out = os.path.join(out_dir, stem)
             n_curves, overlay, note, best_loop = 0, "", "", 0.0
             try:
                 a = argparse.Namespace(
                     pdf=pdf, page=page, panels="auto", panel=None, calibration=None,
                     resample=800, resample_mode="arclength", min_points=60,
-                    figure=None, scan_rate=None,
+                    figure=None, scan_rate=None, cv_only=False, cv_threshold=0.08,
                     no_yaml=True, no_autocalib=False, out=paper_out,
                     raster_panel=(0 if kind == "raster" else None),
                     x_ticks=None, y_ticks=None, x_unit=None, y_unit=None)
@@ -786,6 +851,11 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--no-yaml", action="store_true", help="skip YAML metadata")
     pe.add_argument("--no-autocalib", action="store_true",
                     help="disable automatic calibration from the PDF text layer")
+    pe.add_argument("--cv-only", action="store_true",
+                    help="keep only CV-like panels (closed loops); skip schematics, "
+                         "micrographs, spectra, Nyquist plots by their low loop score")
+    pe.add_argument("--cv-threshold", type=float, default=0.08,
+                    help="min loop score for --cv-only (0..1, default 0.08)")
     pe.add_argument("--out", default=None, help="output dir (default data/out/<pdf>)")
     pe.add_argument("--raster-panel", type=int, default=None,
                     help="[raster pages] which auto-detected plot panel to use (0-indexed)")
