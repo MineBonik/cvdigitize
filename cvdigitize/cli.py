@@ -406,12 +406,11 @@ def _extract_raster(args, pdf, page, stem, out_dir):
 
 
 def _extract_vector(args, pdf, page, stem, out_dir):
-    from .vector_extract import union_bbox
+    from .vector_extract import union_bbox, detect_panels
     from .autocalib import (find_axis_label_sets, match_calibration,
                             detect_ticks_for_bbox, assisted_tick_calibration)
 
     manual = Calibration.load(args.calibration) if args.calibration else None
-    nx, ny = _parse_grid(args.panels)
 
     # Text-layer auto-calibration: many vector figures keep their axis tick
     # labels as real text; a linear fit through (label position, label value)
@@ -424,29 +423,55 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         except Exception:
             label_sets = []
 
-    # collect curves grouped per panel (1x1 = whole figure)
-    if (nx, ny) == (1, 1):
-        panels = {(0, 0): extract_color_groups(pdf, page, min_points=args.min_points)}
+    # Build a uniform list of (label, curves) panels from one of three modes:
+    #   auto  -> detect each plot's axes frame and assign curves to it
+    #   NxM   -> fixed grid split
+    #   1x1   -> the whole figure as a single panel
+    panels_list: list[tuple[str, list]] = []
+    grid = [1, 1]
+    if args.panels.lower() == "auto":
+        detected = detect_panels(pdf, page, min_points=args.min_points,
+                                 min_curve_points=max(60, args.min_points))
+        panels_list = [(p.label, p.curves) for p in detected]
+        grid = [len(detected), 1]
+        if len(panels_list) == 1:
+            panels_list = [("", panels_list[0][1])]  # single plot: no letter
+        if not panels_list:  # nothing detected -> whole figure
+            panels_list = [("", extract_color_groups(pdf, page, min_points=args.min_points))]
+    elif args.panels == "1x1":
+        panels_list = [("", extract_color_groups(pdf, page, min_points=args.min_points))]
     else:
-        panels = extract_panels(pdf, page, nx, ny, min_curve_points=args.min_points)
+        nx, ny = _parse_grid(args.panels)
+        grid = [nx, ny]
+        pmap = extract_panels(pdf, page, nx, ny, min_curve_points=args.min_points)
+        for key in sorted(pmap):
+            panels_list.append((panel_label(key[0], key[1], nx), pmap[key]))
 
-    wanted = None
     if args.panel:
-        col = "abcdefgh".index(args.panel.lower()) % nx
-        row = "abcdefgh".index(args.panel.lower()) // nx
-        wanted = (col, row)
+        panels_list = [(lbl, cs) for lbl, cs in panels_list
+                       if lbl.lower() == args.panel.lower()]
+        if not panels_list:
+            print(f"Panel '{args.panel}' not found (available: "
+                  f"{', '.join(l or '(main)' for l, _ in panels_list) or 'none'}).")
 
     img = render_page(pdf, page, zoom=3.0)
-    report = {"pdf": pdf, "page": page, "panels_grid": [nx, ny],
+    report = {"pdf": pdf, "page": page, "panels_grid": grid,
               "calibrated": manual is not None, "curves": []}
     total = 0
     modes_seen = []
+    # A single --x-ticks/--y-ticks pair describes ONE panel's axes; applying it
+    # to several panels that may have different ranges would silently mis-scale
+    # them. So assisted-tick calibration only fires when exactly one panel is
+    # being processed (whole-figure, a grid of one, or an explicit --panel).
+    ticks_apply = bool(args.x_ticks and args.y_ticks) and len(panels_list) == 1
+    if args.x_ticks and args.y_ticks and len(panels_list) > 1:
+        print(f"Note: {len(panels_list)} panels detected — --x-ticks/--y-ticks describe "
+              f"one panel's axes, so they are NOT applied blindly to all. Re-run with "
+              f"--panel <letter> to calibrate a specific panel (per-panel tick-label "
+              f"crops are written to each panel_*/calib_helper.png). Panels whose axis "
+              f"text is machine-readable are auto-calibrated regardless.")
 
-    for key in sorted(panels):
-        if wanted is not None and key != wanted:
-            continue
-        curves = panels[key]
-        plabel = panel_label(key[0], key[1], nx) if (nx, ny) != (1, 1) else ""
+    for plabel, curves in panels_list:
         pdir = os.path.join(out_dir, f"panel_{plabel}") if plabel else out_dir
         os.makedirs(pdir, exist_ok=True)
 
@@ -461,7 +486,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
                       f"text labels — x: [{calib.ex1:.3g}, {calib.ex2:.3g}] "
                       f"\"{calib.x_unit}\", y: [{calib.jy1:.3g}, {calib.jy2:.3g}] "
                       f"\"{calib.y_unit}\" (verify units in the YAML)")
-        if calib is None and args.x_ticks and args.y_ticks and bbox:
+        if calib is None and ticks_apply and bbox:
             detection = detect_ticks_for_bbox(pdf, page, bbox)
             if detection is not None:
                 calib = assisted_tick_calibration(
@@ -611,7 +636,7 @@ def cmd_batch(args):
             n_curves, overlay, note, best_loop = 0, "", "", 0.0
             try:
                 a = argparse.Namespace(
-                    pdf=pdf, page=page, panels="1x1", panel=None, calibration=None,
+                    pdf=pdf, page=page, panels="auto", panel=None, calibration=None,
                     resample=800, min_points=60, figure=None, scan_rate=None,
                     no_yaml=True, no_autocalib=False, out=paper_out,
                     raster_panel=(0 if kind == "raster" else None),
@@ -702,7 +727,9 @@ def build_parser() -> argparse.ArgumentParser:
     pe = sub.add_parser("extract", help="extract & digitize curves")
     pe.add_argument("pdf")
     pe.add_argument("--page", type=int, default=None, help="0-indexed page (auto if omitted)")
-    pe.add_argument("--panels", default="1x1", help="panel grid, e.g. 2x2 (default 1x1)")
+    pe.add_argument("--panels", default="auto",
+                    help="'auto' (detect each plot's axes frame, default), a grid "
+                         "like 2x2, or 1x1 for the whole figure as one panel")
     pe.add_argument("--panel", default=None, help="single panel letter a,b,c,... (default all)")
     pe.add_argument("--calibration", default=None, help="calibration JSON for real units")
     pe.add_argument("--resample", type=int, default=1000, help="arc-length points (0=off)")
