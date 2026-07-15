@@ -177,7 +177,7 @@ def _write_html_report(out_dir, stem, report):
     for pl in panels:
         pdir = os.path.join(out_dir, f"panel_{pl}") if pl else out_dir
         rows = "".join(
-            f"<tr><td>{c['name']}</td><td>{c['color']}</td>"
+            f"<tr><td>{c['color']}</td><td>{c.get('sample','') or '—'}</td>"
             f"<td>{c['n_points']}</td><td>{c['units'][0]} / {c['units'][1]}</td></tr>"
             for c in report["curves"] if c["panel"] == pl
         )
@@ -189,7 +189,7 @@ def _write_html_report(out_dir, stem, report):
             <figure><img src="{embed(os.path.join(pdir,'curves.png'))}"><figcaption>digitized output</figcaption></figure>
             <figure><img src="{embed(os.path.join(pdir,'overlay.png'))}"><figcaption>overlay on original</figcaption></figure>
           </div>
-          <table><thead><tr><th>curve</th><th>colour</th><th>points</th><th>units</th></tr></thead>
+          <table><thead><tr><th>colour</th><th>sample (from caption)</th><th>points</th><th>units</th></tr></thead>
           <tbody>{rows}</tbody></table>
         </section>""")
 
@@ -436,6 +436,8 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         fig_meta = extract_figure_metadata(pdf, page, axis_titles=titles)
     except Exception:
         fig_meta = None
+    from .metadata import parse_curve_legend, legend_for_panel
+    curve_legend = parse_curve_legend(fig_meta.caption) if fig_meta else {}
     if fig_meta and not fig_meta.is_empty:
         bits = []
         if fig_meta.scan_rate:
@@ -579,12 +581,16 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             "assisted-ticks": "; calibrated from detected tick marks + user-supplied values",
             "none": "; UNCALIBRATED (normalised coords)",
         }[mode]
+        panel_legend = legend_for_panel(curve_legend, plabel or "")
         for pc in processed:
             cg = pc["group"]
             name = f"{stem}_" + (f"{plabel}_" if plabel else "") + cg.name
+            # if the caption says what this colour is, name the curve by it
+            sample = panel_legend.get(cg.name)
+            curve_label = f"{cg.name}: {sample}" if sample else cg.name
             meta = CurveMeta(
                 name=name, figure=(args.figure or (f"panel {plabel}" if plabel else "")),
-                curve=cg.name,
+                curve=curve_label,
                 scan_rate=args.scan_rate or (fig_meta.scan_rate if fig_meta else ""),
                 x_label=pc["xlab"], x_unit=pc["xunit"],
                 y_label=pc["ylab"], y_unit=pc["yunit"],
@@ -601,7 +607,8 @@ def _extract_vector(args, pdf, page, stem, out_dir):
                 paths = {"csv": p}
             report["curves"].append({
                 "panel": plabel, "name": name, "color": cg.name, "rgb": list(cg.rgb),
-                "n_points": len(pc["data"]), "units": [pc["xunit"], pc["yunit"]],
+                "sample": sample or "", "n_points": len(pc["data"]),
+                "units": [pc["xunit"], pc["yunit"]],
                 "loopiness": pc["loopiness"], "calibration": mode,
                 "files": {k: os.path.relpath(v, out_dir) for k, v in paths.items()},
             })
