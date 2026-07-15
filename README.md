@@ -4,9 +4,10 @@ Automated digitization of Cyclic Voltammetry (CV) curves from scientific PDFs
 into `echemdb`-compatible data — replacing the manual svgdigitizer workflow.
 
 Give it a paper PDF; it finds the CV figure (vector **or** scanned/rasterized),
-separates the colour-coded curves, reconstructs each closed loop, calibrates to
-real units, resamples to a clean even trace, and writes CSV + frictionless
-JSON + YAML datapackages.
+detects each plot panel, separates the colour-coded curves, reconstructs each
+closed loop, calibrates to real units, resamples to a clean even trace, pulls
+experimental metadata (scan rate, electrolyte, reference electrode) from the
+caption, and writes CSV + frictionless JSON + YAML datapackages.
 
 > Key design choice: for vector figures we parse the PDF's **vector geometry**
 > directly, so we already have the true curve points — no `svgdigitizer`/
@@ -65,6 +66,16 @@ thing; use whichever your shell prefers.
 The only remaining fully-manual case is reading tick label *text* on raster
 figures without typing them (true OCR) — no OCR engine is available in this
 environment, and the crops make the typing trivial.
+
+### Metadata (the thread's "longest part")
+
+When the PDF has a text layer, the caption and axis titles are parsed for
+**scan rate, electrolyte(s), reference electrode, temperature** and the caption
+itself. These pre-fill the datapackage (scan rate goes straight into
+`scanRate`; the rest into an `autoExtracted` block) so a curator confirms
+rather than types. Everything is flagged auto-extracted and never overrides a
+value you pass with `--scan-rate` etc. On the rizo paper this recovers
+`50 mV/s`, `0.1 M HClO4` / `0.1 M NaOH`, and `RHE` with no input.
 
 ## Verified results
 

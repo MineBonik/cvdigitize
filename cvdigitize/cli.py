@@ -423,6 +423,30 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         except Exception:
             label_sets = []
 
+    # Best-effort experimental metadata from the caption / page text (scan
+    # rate, electrolyte, reference electrode ...). Pre-fills the datapackage so
+    # a curator confirms rather than types — the thread's "longest part".
+    from .metadata import extract_figure_metadata
+    titles = None
+    if label_sets:
+        xs = next((s.title for s in label_sets if s.orientation == "x" and s.title), "")
+        ys = next((s.title for s in label_sets if s.orientation == "y" and s.title), "")
+        titles = (xs, ys)
+    try:
+        fig_meta = extract_figure_metadata(pdf, page, axis_titles=titles)
+    except Exception:
+        fig_meta = None
+    if fig_meta and not fig_meta.is_empty:
+        bits = []
+        if fig_meta.scan_rate:
+            bits.append(f"scan rate {fig_meta.scan_rate}")
+        if fig_meta.electrolytes:
+            bits.append("electrolyte(s): " + ", ".join(fig_meta.electrolytes))
+        if fig_meta.reference_electrode:
+            bits.append(f"ref: {fig_meta.reference_electrode}")
+        if bits:
+            print("Metadata from caption/text (verify): " + " · ".join(bits))
+
     # Build a uniform list of (label, curves) panels from one of three modes:
     #   auto  -> detect each plot's axes frame and assign curves to it
     #   NxM   -> fixed grid split
@@ -560,11 +584,13 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             name = f"{stem}_" + (f"{plabel}_" if plabel else "") + cg.name
             meta = CurveMeta(
                 name=name, figure=(args.figure or (f"panel {plabel}" if plabel else "")),
-                curve=cg.name, scan_rate=args.scan_rate or "",
+                curve=cg.name,
+                scan_rate=args.scan_rate or (fig_meta.scan_rate if fig_meta else ""),
                 x_label=pc["xlab"], x_unit=pc["xunit"],
                 y_label=pc["ylab"], y_unit=pc["yunit"],
                 source_pdf=pdf, method="digitized",
                 comment="auto-extracted from vector PDF" + cal_note,
+                extracted=(fig_meta.as_dict() if fig_meta and not fig_meta.is_empty else {}),
             )
             if calib is not None:
                 paths = write_datapackage(pdir, pc["data"], meta, yaml=not args.no_yaml)
