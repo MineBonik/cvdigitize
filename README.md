@@ -38,7 +38,7 @@ thing; use whichever your shell prefers.
 
 | Milestone | What it does | State |
 |-----------|--------------|-------|
-| **M0** | Vector PDF → auto-split each CV curve by stroke colour, localised per panel | done & verified |
+| **M0** | Vector PDF → auto-split each CV curve by stroke colour, with **automatic panel detection** (each plot's axes frame; handles grids and several figures per page) | done & verified |
 | **M1** | Loop ordering, axis calibration, arc-length/uniform-E resampling, echemdb packaging, CLI | done & verified |
 | **M2** | Auto vector/raster classify + colour/brightness-trace for rasterized figures, incl. multi-panel auto-detection, tiling-strip merging, closed **and L-shaped (despined)** axes, automatic tick-mark finding, and **multi-colour curve splitting by hue** (crossing-tolerant) | done & verified |
 | **M3** | Automatic calibration | done for PDFs with live figure text; assisted (4 typed numbers) everywhere else |
@@ -133,20 +133,26 @@ py -3.11 -m venv .venv
 ## Usage
 
 ```powershell
-# 0) simplest possible: auto page, auto everything, normalised output
+# 0) simplest possible: auto page, auto panels, auto calibration
 cvdigitize mypaper.pdf
+#   Panels are detected automatically (each plot's axes frame) — a 4-panel
+#   figure or two stacked figures on one page come out as separate panel_*
+#   folders with no flags. If the figure keeps its tick labels as text, every
+#   panel is calibrated to real units automatically.
 
 # 1) inspect: which pages hold vector CV figures vs rasterized ones?
 cvdigitize info "data\in\paper.pdf"
 
-# 2) VECTOR figure, whole page, uncalibrated (normalised CSV + overlay)
+# 2) VECTOR figure, all panels auto-detected (normalised unless text-calibratable)
 cvdigitize extract "data\in\paper.pdf"
 
-# 3) VECTOR, multi-panel + real units: split 2x2, take panel (a), calibrate
-cvdigitize extract "data\in\rizo_2025_analysis_351.pdf" `
-    --panels 2x2 --panel a `
-    --calibration "configs\rizo_2025_analysis_351_fig1a.calib.json" `
+# 3) VECTOR, one panel + real units from typed tick values (outlined-text PDFs).
+#    --x-ticks/--y-ticks describe ONE panel, so pick it with --panel:
+cvdigitize extract "data\in\rizo_2025_analysis_351.pdf" --panel a `
+    --x-ticks="0.2,0.8" --y-ticks="150,-150" --x-unit "V vs RHE" --y-unit "uA/cm2" `
     --figure 1a --scan-rate "50 mV/s"
+#    (read the four numbers off panel_a/calib_helper.png; or use --panels 2x2
+#    for a fixed grid, or --calibration file.json for full manual control)
 
 # 4) build a VECTOR calibration: render a page with a pixel grid to read axis anchors
 cvdigitize grid "data\in\paper.pdf" --page 1

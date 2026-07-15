@@ -398,6 +398,84 @@ def panel_label(col: int, row: int, nx: int) -> str:
     return chr(ord("a") + row * nx + col)
 
 
+@dataclass
+class Panel:
+    """One detected plot within a page: its axes frame and the curves in it."""
+
+    label: str
+    frame_pdf: tuple[float, float, float, float]   # (x0, y0, x1, y1) PDF points
+    curves: list[CurveGroup]
+
+
+def detect_panels(
+    pdf_path: str,
+    page_number: int,
+    *,
+    min_points: int = 60,
+    zoom: float = 3.0,
+    min_curve_points: int = 150,
+) -> list[Panel]:
+    """Detect each plot's axes frame and assign curves to the frame that holds
+    them — automatic panel splitting for ANY layout (grids, or several
+    separate figures stacked on one page), replacing a hand-specified grid.
+
+    A colour group's sub-paths are distributed to whichever detected frame
+    contains their centroid; sub-paths outside every frame (legend swatches,
+    stray marks) are dropped for free. Panels are lettered in reading order
+    (top-to-bottom, then left-to-right). Frames that end up with too few curve
+    points (SEM insets, empty axes) are discarded.
+
+    Falls back to a single whole-page panel when no frames are found, so the
+    caller always gets at least one panel to work with.
+    """
+    import cv2
+
+    from .ingest import render_page
+    from .raster_extract import detect_all_frames
+
+    groups = extract_color_groups(pdf_path, page_number, min_points=min_points)
+    if not groups:
+        return []
+
+    img = render_page(pdf_path, page_number, zoom=zoom)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frames_px = detect_all_frames(gray)
+    # to PDF points, with a small outward margin (curves can touch the border)
+    margin = 3.0
+    frames = [(f[0] / zoom - margin, f[1] / zoom - margin,
+               f[2] / zoom + margin, f[3] / zoom + margin) for f in frames_px]
+
+    if not frames:
+        whole = [g for g in groups if g.n_points >= min_curve_points]
+        return [Panel("", union_bbox(whole) if whole else (0, 0, 0, 0), whole)] if whole else []
+
+    # reading order for labels
+    order = sorted(range(len(frames)),
+                   key=lambda i: (round(frames[i][1] / 20), frames[i][0]))
+    label_of = {fi: chr(ord("a") + k) for k, fi in enumerate(order)}
+
+    panels: dict[int, dict[tuple, CurveGroup]] = {i: {} for i in range(len(frames))}
+    for g in groups:
+        for pl in g.polylines:
+            cx, cy = pl[:, 0].mean(), pl[:, 1].mean()
+            for fi, (fx0, fy0, fx1, fy1) in enumerate(frames):
+                if fx0 <= cx <= fx1 and fy0 <= cy <= fy1:
+                    bucket = panels[fi]
+                    cg = bucket.get(g.rgb)
+                    if cg is None:
+                        cg = bucket[g.rgb] = CurveGroup(rgb=g.rgb, name=g.name)
+                    cg.polylines.append(pl)
+                    break  # a point belongs to at most one (first) frame
+
+    result: list[Panel] = []
+    for fi in order:
+        curves = [c for c in panels[fi].values() if c.n_points >= min_curve_points]
+        curves.sort(key=lambda c: c.n_points, reverse=True)
+        if curves:
+            result.append(Panel(label_of[fi], frames[fi], curves))
+    return result
+
+
 def find_figure_pages(pdf_path: str, *, min_colors: int = 2,
                       min_points: int = 60) -> list[int]:
     """Heuristic: pages that carry several multi-colour vector curves."""
