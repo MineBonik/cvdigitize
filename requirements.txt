@@ -1,13 +1,18 @@
 # cvdigitize dependencies (Python 3.11)
 # Install:  py -3.11 -m venv .venv
 #           .venv\Scripts\python.exe -m pip install -r requirements.txt
-pymupdf>=1.28      # PDF parsing + vector drawing extraction (fitz)
-lxml>=6.0          # SVG XML manipulation
-numpy>=2.0         # geometry / arrays
-scipy>=1.13        # nearest-neighbour metric, resampling (M1)
-matplotlib>=3.9    # verification overlays / figures
+pymupdf>=1.28               # PDF parsing, vector drawing + text-layer extraction (fitz)
+lxml>=6.0                   # SVG/XML handling
+numpy>=2.0                  # geometry / arrays
+scipy>=1.13                 # nearest-neighbour metric (verification), interpolation
+matplotlib>=3.9             # overlays, digitized-curve plots, reports
+opencv-python-headless>=4.9 # raster: frame/tick detection, colour masks, components
+scikit-image>=0.22          # raster: curve skeletonization
 
-# --- planned for later milestones (not yet required) ---
-# svgdigitizer>=0.14.4   # M1: vector -> CSV digitization engine
-# opencv-python           # M2: raster color-mask tracing
-# pytesseract             # M3: OCR axis auto-calibration
+# --- dev / tests ---
+# pytest>=8                 # test suite (not needed to run the tool)
+
+# --- NOT required (deliberately avoided) ---
+# svgdigitizer   — unnecessary: we parse PDF vector geometry directly
+# an OCR engine  — tick *positions* are auto-detected; label crops make the two
+#                  numbers trivial to read, so no tesseract/easyocr dependency
