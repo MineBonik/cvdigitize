@@ -31,6 +31,7 @@ class CurveMeta:
     method: str = "digitized"
     tags: list[str] = field(default_factory=list)
     comment: str = ""
+    extracted: dict = field(default_factory=dict)  # auto-extracted text metadata
 
 
 def write_csv(path: str, data: np.ndarray, meta: CurveMeta) -> None:
@@ -77,6 +78,10 @@ def build_descriptor(csv_name: str, meta: CurveMeta) -> dict:
                             ],
                             "comment": meta.comment,
                         },
+                        # Metadata parsed from the figure caption / page text.
+                        # Present so a curator can confirm rather than re-type;
+                        # always flagged as auto-extracted, never authoritative.
+                        **({"autoExtracted": meta.extracted} if meta.extracted else {}),
                     }
                 },
             }
