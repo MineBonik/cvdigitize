@@ -18,3 +18,6 @@ data/corpus/
 # OS
 Thumbs.db
 .DS_Store
+
+# Cloned external dataset (echemdb ground truth) - not part of this repo
+data/echemdb/
