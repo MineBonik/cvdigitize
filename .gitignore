@@ -21,3 +21,6 @@ Thumbs.db
 
 # Cloned external dataset (echemdb ground truth) - not part of this repo
 data/echemdb/
+
+# Copyrighted source papers supplied for benchmarking - not part of this repo
+data/papers_additional_after_request/
