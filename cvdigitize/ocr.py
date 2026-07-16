@@ -20,20 +20,50 @@ silently corrupt a calibration. Even when applied, the calibration is flagged
 """
 from __future__ import annotations
 
+import os
 import re
+import shutil
 
 import numpy as np
 
 _AVAILABLE: bool | None = None
 _NUM = re.compile(r"[+-]?\d*\.?\d+")
 
+# Common Tesseract binary locations to probe when it isn't on PATH (the
+# UB-Mannheim Windows installer does not add itself to PATH by default).
+_CANDIDATE_BINARIES = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+    "/usr/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/opt/homebrew/bin/tesseract",
+]
+
+
+def _locate_binary() -> str | None:
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    for path in _CANDIDATE_BINARIES:
+        if os.path.isfile(path):
+            return path
+    return None
+
 
 def available() -> bool:
-    """True if pytesseract is importable AND the Tesseract binary is present."""
+    """True if pytesseract is importable AND the Tesseract binary is present.
+
+    Also points pytesseract at the binary when it is installed but not on PATH
+    (typical of the Windows installer), so OCR works with no manual setup.
+    """
     global _AVAILABLE
     if _AVAILABLE is None:
         try:
             import pytesseract
+            binary = _locate_binary()
+            if binary and binary.lower() != "tesseract":
+                pytesseract.pytesseract.tesseract_cmd = binary
             pytesseract.get_tesseract_version()
             _AVAILABLE = True
         except Exception:
@@ -50,6 +80,33 @@ def _preprocess(crop_rgb: np.ndarray, upscale: int = 4) -> "np.ndarray":
     if th.mean() < 127:          # ensure dark text on light background
         th = 255 - th
     return cv2.copyMakeBorder(th, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+
+
+def _leading_minus(crop_rgb: np.ndarray) -> bool:
+    """Detect a leading minus sign that Tesseract commonly drops.
+
+    A minus is a short, wide, vertically-centred ink mark to the left of the
+    digits — distinct from a digit (nearly full height) or a decimal point
+    (small and low). We take the left-most connected ink component and check
+    that geometry, so a decimal point or a digit stroke won't be misread as a
+    sign.
+    """
+    import cv2
+    gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
+    _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(th, connectivity=8)
+    if n <= 1:
+        return False
+    H = crop_rgb.shape[0]
+    comps = [stats[i] for i in range(1, n) if stats[i][cv2.CC_STAT_AREA] >= 3]
+    if not comps:
+        return False
+    left = min(comps, key=lambda s: s[cv2.CC_STAT_LEFT])
+    x, y, w, h, _ = left
+    cy = y + h / 2
+    return (w >= 1.4 * h                     # wider than tall
+            and h < 0.45 * H                 # short (not a digit)
+            and 0.25 * H < cy < 0.75 * H)    # vertically centred (not a '.')
 
 
 def read_number(crop_rgb: np.ndarray) -> tuple[float | None, float]:
@@ -82,10 +139,23 @@ def read_number(crop_rgb: np.ndarray) -> tuple[float | None, float]:
     nums = _NUM.findall(joined)
     if len(nums) != 1:
         return None, (float(np.mean(confs)) if confs else 0.0)
+    value = nums[0]
+    # Recover a leading minus if Tesseract dropped it (very common on axis
+    # labels). Detected geometrically from the image, so it is reliable even
+    # when the character-level OCR confidence for the sign is poor.
+    conf = float(np.mean(confs)) if confs else 0.0
     try:
-        return float(nums[0]), (float(np.mean(confs)) if confs else 0.0)
+        val = float(value)
     except ValueError:
-        return None, 0.0
+        return None, conf
+    if val >= 0 and not value.startswith("-"):
+        try:
+            if _leading_minus(crop_rgb):
+                val = -val
+                conf = max(conf, 0.75)   # geometry is independent evidence
+        except Exception:
+            pass
+    return val, conf
 
 
 def _normalize_minus(s: str) -> str:
