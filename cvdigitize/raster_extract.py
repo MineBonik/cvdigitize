@@ -689,6 +689,73 @@ def split_color_curves(interior: np.ndarray, *, sat_thresh: float = 0.35,
 # --------------------------------------------------------------------------- #
 # End-to-end
 # --------------------------------------------------------------------------- #
+def _erase_straight_lines(mask: np.ndarray, *, min_len_frac: float = 0.4,
+                          thickness: int = 3) -> np.ndarray:
+    """Zero out long, perfectly straight horizontal/vertical runs (plot axes).
+
+    Classic voltammograms are drawn with bare crossing axes and no box, so
+    :func:`detect_all_frames` finds nothing. The axis lines are the only dark
+    features that run dead-straight for a large fraction of the panel; a CV
+    curve is locally curvy and never contributes a single-row/column run that
+    long. We erase those runs (dilated a little to cover anti-aliased edges),
+    leaving the curve — which reconnects into a few long arcs the postprocessor
+    can stitch.
+    """
+    out = mask.copy()
+    h, w = mask.shape
+    hmin = max(20, int(min_len_frac * w))
+    vmin = max(20, int(min_len_frac * h))
+    t = thickness
+    for r, s, e in _line_segments(mask, hmin, horizontal=True):
+        out[max(0, r - t):r + t + 1, s:e] = False
+    for c, s, e in _line_segments(mask, vmin, horizontal=False):
+        out[s:e, max(0, c - t):c + t + 1] = False
+    return out
+
+
+def _components_as_polylines(mask: np.ndarray, *, min_area: int,
+                             max_spur_len: int) -> list[np.ndarray]:
+    """Skeletonise each sizeable connected component into an (x, y) polyline."""
+    m = mask.astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    polylines = []
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] < min_area:
+            continue
+        comp = labels == i
+        skel = skeletonize_curve(comp)
+        poly = skeleton_to_polyline(skel, max_spur_len=max_spur_len)
+        if len(poly) >= 8:
+            polylines.append(poly)
+    return polylines
+
+
+def extract_frameless_curve(rgb: np.ndarray, *, value_thresh: float = 0.55,
+                            max_spur_len: int = 15) -> np.ndarray:
+    """Extract the dominant dark curve from a panel with no detectable frame.
+
+    For classic crossing-axis voltammograms (no bounding box): mask dark
+    pixels, erase the straight axis lines, drop text/tick specks by area, then
+    skeletonise every remaining component and stitch the arcs into one ordered
+    loop with the shared postprocessor. Returns an (x, y) pixel polyline in the
+    input image's coordinates (empty if nothing curve-like remains).
+    """
+    from .postprocess import keep_main_components, order_curve, dedupe
+
+    mask = mask_dark_curve(rgb, value_thresh=value_thresh)
+    h, w = mask.shape
+    mask = _erase_straight_lines(mask)
+    polylines = _components_as_polylines(mask, min_area=max(30, (h * w) // 4000),
+                                         max_spur_len=max_spur_len)
+    if not polylines:
+        return np.empty((0, 2))
+    kept = keep_main_components(polylines)
+    if not kept:
+        return np.empty((0, 2))
+    loop = dedupe(order_curve(kept))
+    return loop
+
+
 def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
                         value_thresh: float, frame_inset_px: int,
                         max_spur_len: int) -> dict:
