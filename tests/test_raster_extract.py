@@ -8,6 +8,7 @@ from cvdigitize.raster_extract import (
     _long_runs, _merge_collinear_segments, _cluster_peaks,
     detect_frame_bbox, detect_all_frames, detect_axis_ticks,
     mask_dark_curve, largest_component, skeletonize_curve, skeleton_to_polyline,
+    _erase_straight_lines, extract_frameless_curve,
 )
 
 
@@ -53,6 +54,44 @@ def test_merge_collinear_segments_keeps_nonoverlapping_apart():
     segs = [(10, 0, 20), (11, 200, 220)]
     lines = _merge_collinear_segments(segs)
     assert len(lines) == 2
+
+
+# --------------------------------------------------------------------------- #
+# frameless extraction (classic crossing-axis figures with no bounding box)
+# --------------------------------------------------------------------------- #
+def test_erase_straight_lines_removes_axes_keeps_curve():
+    mask = np.zeros((200, 300), dtype=bool)
+    mask[100, 10:290] = True          # long horizontal axis
+    mask[10:190, 20] = True           # long vertical axis
+    # a short, locally-curvy stroke: never a long single-row/col run
+    for x in range(40, 260):
+        mask[120 + int(20 * np.sin(x / 20)), x] = True
+    cleaned = _erase_straight_lines(mask)
+    # axis row and column gone
+    assert cleaned[100, 150] == False
+    assert cleaned[50, 20] == False
+    # curve pixels survive
+    assert cleaned[:, 40:260].any()
+
+
+def test_extract_frameless_curve_traces_sine_without_frame():
+    img = np.full((240, 360, 3), 255, dtype=np.uint8)
+    # bare crossing axes (no box) + a wavy curve, all black
+    cv2.line(img, (30, 120), (340, 120), (0, 0, 0), 2)   # potential axis
+    cv2.line(img, (30, 20), (30, 220), (0, 0, 0), 2)     # current axis
+    xs = np.arange(40, 330)
+    ys = (120 - 60 * np.sin((xs - 40) / 45)).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 1, (0, 0, 0), -1)
+    poly = extract_frameless_curve(img)
+    assert len(poly) >= 50
+    # spans most of the curve's x-range
+    assert np.ptp(poly[:, 0]) > 0.6 * (xs.max() - xs.min())
+
+
+def test_extract_frameless_curve_empty_on_blank():
+    img = np.full((120, 160, 3), 255, dtype=np.uint8)
+    assert len(extract_frameless_curve(img)) == 0
 
 
 # --------------------------------------------------------------------------- #
