@@ -231,6 +231,15 @@ def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
         regions = find_image_regions(pdf, page)
     except Exception:
         regions = []
+    def _add(poly):
+        if poly is None or len(poly) < 20:
+            return False
+        loop = dedupe(order_curve(keep_main_components([np.asarray(poly, float)])))
+        if len(loop) >= 20:
+            out.append(resample_arclength(loop, n=600))
+            return True
+        return False
+
     for region in regions:
         got = False
         try:
@@ -238,13 +247,14 @@ def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
         except Exception:
             results = []
         for res in results:
-            poly = res.get("polyline_px")
-            if poly is None or len(poly) < 20:
-                continue
-            loop = dedupe(order_curve(keep_main_components([np.asarray(poly, float)])))
-            if len(loop) >= 20:
-                out.append(resample_arclength(loop, n=600))
+            # the dark-mask curve AND every colour-separated curve in the panel
+            # (coloured CVs have high brightness, so the dark mask misses them —
+            # they only appear in split_color_curves' output)
+            if _add(res.get("polyline_px")):
                 got = True
+            for cdict in res.get("curves", []):
+                if _add(cdict.get("polyline_px")):
+                    got = True
         if not got:
             # No framed panel here -> frameless dominant-curve fallback. Reliable
             # for single-plot classic figures (bare crossing axes); we skip it
@@ -269,30 +279,26 @@ def all_paper_curves(pdf: str) -> list[dict]:
     infos = classify_pdf(pdf)
     pool: list[dict] = []
     vec_pages = sorted({pi.number for pi in infos if pi.n_curve_items > 20})
-    vec_hit_pages = set()
     for pg in vec_pages:
         try:
             cs = extracted_curves(pdf, pg)
         except Exception:
             cs = []
-        if cs:
-            vec_hit_pages.add(pg)
         pool += [{"xy": c, "page": pg, "branch": "vector"} for c in cs]
     # Any page carrying an embedded figure image is a raster candidate — not
     # only those classified "raster" (a page can hold a figure image yet read as
     # "sparse" when the image doesn't dominate the page area, as in older scans).
-    ras_pages = []
+    # We do NOT skip pages where vector extraction found something: a page can
+    # hold junk vector furniture (rules, logos) *and* the real figure as an
+    # embedded raster image (common in modern typeset papers). Pool both.
     for pi in infos:
-        if pi.number in vec_hit_pages:
-            continue
         try:
             has_img = bool(find_image_regions(pdf, pi.number))
         except Exception:
             has_img = False
         if pi.kind == "raster" or has_img:
-            ras_pages.append(pi.number)
-    for pg in ras_pages:
-        pool += [{"xy": c, "page": pg, "branch": "raster"} for c in raster_curves(pdf, pg)]
+            pool += [{"xy": c, "page": pi.number, "branch": "raster"}
+                     for c in raster_curves(pdf, pi.number)]
     return pool
 
 
