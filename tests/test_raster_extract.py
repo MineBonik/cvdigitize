@@ -9,6 +9,7 @@ from cvdigitize.raster_extract import (
     detect_frame_bbox, detect_all_frames, detect_axis_ticks,
     mask_dark_curve, largest_component, skeletonize_curve, skeleton_to_polyline,
     _erase_straight_lines, extract_frameless_curve,
+    _merge_boxes, locate_plot_regions, extract_scan_curves,
 )
 
 
@@ -92,6 +93,49 @@ def test_extract_frameless_curve_traces_sine_without_frame():
 def test_extract_frameless_curve_empty_on_blank():
     img = np.full((120, 160, 3), 255, dtype=np.uint8)
     assert len(extract_frameless_curve(img)) == 0
+
+
+# --------------------------------------------------------------------------- #
+# figure localisation inside a full-page scan (text + figure)
+# --------------------------------------------------------------------------- #
+def test_merge_boxes_unions_overlapping():
+    boxes = [(0, 0, 10, 10), (5, 5, 15, 15), (100, 100, 110, 110)]
+    merged = _merge_boxes(boxes)
+    assert len(merged) == 2
+    assert (0, 0, 15, 15) in merged
+
+
+def _page_with_text_and_curve():
+    """A tall 'page': rows of small text blobs at top, a big sparse CV curve
+    (a wavy stroke) filling the lower half."""
+    img = np.full((600, 500, 3), 255, dtype=np.uint8)
+    for r in range(40, 200, 24):                  # 'text' lines of small marks
+        for c in range(40, 460, 18):
+            cv2.rectangle(img, (c, r), (c + 8, r + 10), (0, 0, 0), -1)
+    xs = np.arange(60, 440)                        # a big sparse curve
+    ys = (430 - 120 * np.sin((xs - 60) / 60)).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 2, (0, 0, 0), -1)
+    return img
+
+
+def test_locate_plot_regions_finds_curve_not_text():
+    img = _page_with_text_and_curve()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    boxes = locate_plot_regions(gray)
+    assert len(boxes) >= 1
+    # the located box should be in the lower half (the curve), not the text band
+    x0, y0, x1, y1 = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+    assert y1 > 300 and (y1 - y0) > 100
+
+
+def test_extract_scan_curves_traces_curve_ignoring_text():
+    img = _page_with_text_and_curve()
+    curves = extract_scan_curves(img)
+    assert len(curves) >= 1
+    curve = max(curves, key=len)
+    assert len(curve) >= 50
+    assert np.ptp(curve[:, 0]) > 200          # spans the curve's x-range
 
 
 # --------------------------------------------------------------------------- #

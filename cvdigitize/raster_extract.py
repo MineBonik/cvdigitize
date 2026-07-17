@@ -756,6 +756,106 @@ def extract_frameless_curve(rgb: np.ndarray, *, value_thresh: float = 0.55,
     return loop
 
 
+def _merge_boxes(boxes: list[tuple[int, int, int, int]], *, gap: int = 0
+                 ) -> list[tuple[int, int, int, int]]:
+    """Union overlapping/adjacent (x0, y0, x1, y1) boxes (a curve split across
+    a couple of components becomes one figure region)."""
+    boxes = list(boxes)
+    merged = True
+    while merged and len(boxes) > 1:
+        merged = False
+        out: list[tuple[int, int, int, int]] = []
+        while boxes:
+            a = boxes.pop()
+            ax0, ay0, ax1, ay1 = a
+            hit = None
+            for b in out:
+                bx0, by0, bx1, by1 = b
+                if (ax0 <= bx1 + gap and bx0 <= ax1 + gap
+                        and ay0 <= by1 + gap and by0 <= ay1 + gap):
+                    hit = b
+                    break
+            if hit is not None:
+                out.remove(hit)
+                out.append((min(ax0, hit[0]), min(ay0, hit[1]),
+                            max(ax1, hit[2]), max(ay1, hit[3])))
+                merged = True
+            else:
+                out.append(a)
+        boxes = out
+    return boxes
+
+
+def locate_plot_regions(gray: np.ndarray, *, dark_thresh: int = 160,
+                        min_diag_frac: float = 0.18, max_fill: float = 0.30,
+                        pad_frac: float = 0.03) -> list[tuple[int, int, int, int]]:
+    """Find plot sub-regions inside a full-page scan (text + one or more figures).
+
+    A voltammogram trace is a single large but *sparsely filled* connected
+    component — a thin ink stroke sprawling across a big bounding box (fill
+    ~2-10%) — whereas body-text characters are small and any filled block/rule
+    is dense or spans the full page width. We keep components that are large and
+    thin, pad and merge their boxes, and return them so the curve can be
+    extracted from a tight crop instead of the whole text page. Returns [] when
+    nothing plot-like stands out (caller then treats the region as a single
+    plot)."""
+    h, w = gray.shape
+    page_diag = float(np.hypot(h, w))
+    dark = (gray < dark_thresh).astype(np.uint8)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    px, py = int(pad_frac * w), int(pad_frac * h)
+    boxes = []
+    for i in range(1, n):
+        x, y, ww, hh, area = stats[i]
+        diag = float(np.hypot(ww, hh))
+        fill = area / (ww * hh + 1)
+        if (diag >= min_diag_frac * page_diag and fill < max_fill
+                and ww < 0.95 * w and hh < 0.95 * h):
+            boxes.append((max(0, x - px), max(0, y - py),
+                          min(w, x + ww + px), min(h, y + hh + py)))
+    return _merge_boxes(boxes)
+
+
+def extract_scan_curves(rgb: np.ndarray, *, dark_thresh: int = 160,
+                        min_diag_frac: float = 0.18, max_fill: float = 0.30,
+                        max_spur_len: int = 15) -> list[np.ndarray]:
+    """Extract voltammogram curves from a full-page scan (text + figures).
+
+    Locates each curve as a large, sparsely-filled connected component (see
+    :func:`locate_plot_regions`) and traces *only that component's pixels* — so
+    body text and figure captions can never be stitched into the curve, which is
+    the failure mode of extracting from a padded bounding box. Within a
+    component the straight axis lines are erased and the surviving arcs stitched
+    into one ordered loop. Returns an (x, y) polyline per figure found."""
+    from .postprocess import keep_main_components, order_curve, dedupe
+
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    h, w = gray.shape
+    page_diag = float(np.hypot(h, w))
+    dark = (gray < dark_thresh).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+
+    curves = []
+    for i in range(1, n):
+        x, y, ww, hh, area = stats[i]
+        diag = float(np.hypot(ww, hh))
+        fill = area / (ww * hh + 1)
+        if not (diag >= min_diag_frac * page_diag and fill < max_fill
+                and ww < 0.95 * w and hh < 0.95 * h):
+            continue
+        comp = labels == i                       # this figure's ink only
+        comp = _erase_straight_lines(comp)       # drop the bare axis lines
+        polylines = _components_as_polylines(
+            comp, min_area=max(30, (ww * hh) // 4000), max_spur_len=max_spur_len)
+        kept = keep_main_components(polylines)
+        if not kept:
+            continue
+        loop = dedupe(order_curve(kept))
+        if len(loop) >= 20:
+            curves.append(loop)
+    return curves
+
+
 def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
                         value_thresh: float, frame_inset_px: int,
                         max_spur_len: int) -> dict:
