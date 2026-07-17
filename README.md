@@ -115,27 +115,36 @@ yourself:
     data\echemdb\electrochemistry-data\literature\svgdigitizer
 ```
 
-Aggregate over all 48 curves: **mean normalised Chamfer 0.036 · 46 %
+Candidate curves pass a **CV-plausibility gate** (arc-efficiency + self-crossing
+bounds) before matching, so a reference whose real figure extracted badly
+reports "no acceptable curve" rather than flattering itself against a logo /
+watermark / rule / text-blob — the aggregate below is the *honest* one.
+
+Aggregate over all 48 curves: **mean normalised Chamfer 0.037 · 46 %
 good-or-better (<0.03) · 27 % excellent (<0.01)**, every reference matched.
 
 | Paper (echemdb key) | figure kind | mean Chamfer | best curve |
 |---|---|---|---|
 | briega-martos 2021 (15 curves) | vector, multi-panel | **0.010** | 0.0025 excellent |
 | garcia-araez 2011 | raster, colour | **0.022** | 0.0030 excellent |
-| abe 2019 (3×3 panel grid) | raster, colour | **0.026** | 0.0085 excellent |
+| abe 2019 (3×3 panel grid) | raster, colour | **0.028** | 0.0085 excellent |
 | gomez-marin 2012 | raster, colour | 0.046 | 0.0124 good |
 | briega-martos 2020 (7 curves) | raster, colour | 0.046 | 0.0384 fair |
 | schnaidt 2017 | raster | 0.055 | — |
-| sandbeck 2019 | raster, solid+dashed | 0.064 | — |
-| clavilier 1980 (role) | scanned, classic axes | 0.068 | — |
-| markovic 1996 | scanned, scale-bar cal. | 0.074 | — |
-| clavilier 1980 (preparation) | scanned, figure-in-text | 0.124 | — |
+| sandbeck 2019 | raster, solid+dashed | 0.071 | — |
+| markovic 1996 | scanned, scale-bar cal. | 0.076 | — |
+| clavilier 1980 (preparation) | scanned, figure-in-text | **0.081** | — |
+| clavilier 1980 (role) | scanned, classic axes | 0.089 | — |
 
 Reads: cleanly-drawn vector figures are near-perfect; colour-coded raster
-figures now extract well after pooling every colour-separated curve (not just
-the dark one); the hard tail is same-colour solid+dashed overlays and small
-plots buried in full-page text scans, where locating the figure is the
-bottleneck.
+figures extract well after pooling every colour-separated curve (not just the
+dark one). Scanned papers whose figures sit inside a full-page text image are
+now **located** as a large, sparsely-filled ink component and traced from that
+crop alone — clavilier-preparation went 0.23 → 0.08 once its CV stopped
+competing with body text. The hard tail is same-colour solid+dashed overlays
+(sandbeck) and stitch shortcuts across erased axis crossings on low-contrast
+scans. (Measured and rejected as non-improvements: tangent-continuity stitching
+— net-neutral; higher render zoom — net-negative.)
 
 **Real paper — `rizo_2025_analysis_351` (ACS Electrochem 2025), vector figure.**
 All 7 panel-(a) curves auto-extracted from the raw PDF match Vladislav's
