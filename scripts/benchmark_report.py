@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from benchmark import (all_paper_curves, map_pdf_to_entry, chamfer_oriented,
-                       _norm, _flip_y, chamfer)
+                       _norm, _flip_y, chamfer, cv_plausible)
 import glob
 from cvdigitize.echemdb_ref import load_entry_references
 
@@ -119,7 +119,8 @@ def build(pdf_dir: str, echemdb_root: str, out_html: str):
         if not refs:
             continue
         print(f"rendering {os.path.basename(entry)} ({len(refs)} curves)...")
-        pool = _cached_pool(pdf)
+        # same honesty gate as the benchmark: only CV-shaped candidates eligible
+        pool = [c for c in _cached_pool(pdf) if cv_plausible(c["xy"])]
         img, rows = _paper_figure(refs, pool)
         chs = [r["chamfer"] for r in rows if r["chamfer"] is not None]
         all_ch += chs
