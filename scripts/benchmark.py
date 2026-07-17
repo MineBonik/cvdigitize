@@ -274,7 +274,8 @@ def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
     framed panel (classic crossing-axis figures with no box), falls back to the
     frameless dominant-curve extractor."""
     from cvdigitize.raster_extract import (find_image_regions, extract_all_panel_curves,
-                                           render_region, extract_frameless_curve)
+                                           render_region, extract_frameless_curve,
+                                           extract_scan_curves)
     out: list[np.ndarray] = []
     try:
         regions = find_image_regions(pdf, page)
@@ -305,17 +306,23 @@ def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
                 if _add(cdict.get("polyline_px")):
                     got = True
         if not got:
-            # No framed panel here -> frameless dominant-curve fallback. Reliable
-            # for single-plot classic figures (bare crossing axes); we skip it
-            # when a frame was found, so multi-panel composites (which frameless
-            # would smear into one path) stay with the framed pipeline.
+            # No framed panel here -> scan/frameless fallback. Pool BOTH: (a)
+            # per-figure component tracing (locate each figure as a big sparse
+            # ink blob, trace only its pixels, so captions/body text can't
+            # contaminate it — the full-page-scan failure mode), and (b) the
+            # whole-region frameless trace. Adding candidates can't worsen the
+            # match, and the two win on different figures.
             try:
                 img = render_region(pdf, page, region.bbox, zoom=4.0)
-                loop = extract_frameless_curve(img)
+                loops = list(extract_scan_curves(img))
+                fl = extract_frameless_curve(img)
+                if len(fl) >= 20:
+                    loops.append(fl)
             except Exception:
-                loop = np.empty((0, 2))
-            if len(loop) >= 20:
-                out.append(resample_arclength(loop, n=600))
+                loops = []
+            for loop in loops:
+                if len(loop) >= 20:
+                    out.append(resample_arclength(loop, n=600))
     return out
 
 
