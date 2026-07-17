@@ -217,6 +217,55 @@ def chamfer_oriented(ref_norm: np.ndarray, curve: np.ndarray) -> float:
     return min(chamfer(ref_norm, a), chamfer(ref_norm, b))
 
 
+def _arc_efficiency(xy: np.ndarray) -> float:
+    """Total path length / bounding-box diagonal. A CV loop goes out and back,
+    so ~2.3-4.5; a near-straight line is ~1; a zig-zag / text blob / stack of
+    rules doubles back many times and runs high (6+)."""
+    seg = float(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])).sum())
+    diag = float(np.hypot(np.ptp(xy[:, 0]), np.ptp(xy[:, 1]))) or 1.0
+    return seg / diag
+
+
+def _self_crossings(xy: np.ndarray, step: int = 10) -> int:
+    """Approximate count of self-intersections on a downsampled polyline. A CV
+    loop crosses itself only near its turning points (~0-3); letters, logos and
+    multi-panel smears cross many times."""
+    p = xy[::step]
+    n = len(p)
+
+    def ccw(a, b, c):
+        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+
+    count = 0
+    for i in range(n - 1):
+        a, b = p[i], p[i + 1]
+        for j in range(i + 2, n - 1):
+            if i == 0 and j == n - 2:
+                continue  # shared endpoint of a closed loop
+            c, d = p[j], p[j + 1]
+            if ccw(a, c, d) != ccw(b, c, d) and ccw(a, b, c) != ccw(a, b, d):
+                count += 1
+    return count
+
+
+def cv_plausible(xy: np.ndarray, *, eff_lo: float = 1.8, eff_hi: float = 5.0,
+                 max_cross: int = 6) -> bool:
+    """True if a curve is shaped like a voltammogram, not extraction junk.
+
+    Rejects near-straight lines (arc-efficiency ~1: text-scan noise), and
+    zig-zags / logos / stacked rules / multi-panel smears (high arc-efficiency
+    or many self-crossings). Real CV loops sit comfortably inside the window
+    (measured: arc-efficiency 2.4-3.2, crossings 0-2). Used to keep the
+    benchmark honest — a reference with no plausible candidate reports
+    "no acceptable curve" rather than matching a junk shape at a fair score."""
+    if len(xy) < 20:
+        return False
+    eff = _arc_efficiency(xy)
+    if not (eff_lo <= eff <= eff_hi):
+        return False
+    return _self_crossings(xy) <= max_cross
+
+
 def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
     """All curves the raster pipeline finds on a page, resampled like the
     vector path so the two pools are directly comparable.
@@ -316,11 +365,16 @@ def benchmark_echemdb(pdf: str, entry_dir: str) -> dict:
     if not refs:
         return {"pdf": os.path.basename(pdf), "entry": os.path.basename(entry_dir),
                 "error": "no references parsed", "results": []}
-    pool = all_paper_curves(pdf)
+    raw_pool = all_paper_curves(pdf)
+    # Honesty gate: only CV-shaped candidates are eligible, so a reference whose
+    # real figure extracted badly reports "no acceptable curve" instead of
+    # silently matching a logo/watermark/rule/text-blob at a fair-looking score.
+    pool = [c for c in raw_pool if cv_plausible(c["xy"])]
     if not pool:
         return {"pdf": os.path.basename(pdf), "entry": os.path.basename(entry_dir),
-                "error": "no curves extracted from PDF", "n_reference": len(refs),
-                "n_matched": 0, "results": [
+                "error": "no CV-plausible curves extracted from PDF",
+                "n_reference": len(refs), "n_matched": 0,
+                "n_pool": 0, "n_pool_raw": len(raw_pool), "results": [
                     {"reference": r.name, "chamfer": None, "page": None, "branch": None}
                     for r in refs]}
 
@@ -333,7 +387,8 @@ def benchmark_echemdb(pdf: str, entry_dir: str) -> dict:
                      "page": pool[best]["page"], "branch": pool[best]["branch"]})
     ch = [r["chamfer"] for r in rows if r["chamfer"] is not None]
     return {"pdf": os.path.basename(pdf), "entry": os.path.basename(entry_dir),
-            "n_reference": len(refs), "n_matched": len(ch), "n_pool": len(pool),
+            "n_reference": len(refs), "n_matched": len(ch),
+            "n_pool": len(pool), "n_pool_raw": len(raw_pool),
             "mean_chamfer": round(float(np.mean(ch)), 5) if ch else None,
             "max_chamfer": round(float(np.max(ch)), 5) if ch else None,
             "results": sorted(rows, key=lambda r: (r["chamfer"] is None, r["chamfer"] or 0))}
