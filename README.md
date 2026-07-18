@@ -272,6 +272,33 @@ cvdigitize batch "data\corpus"
 (`cvdigitize` above = `cvdigitize.bat` / `.\cvdigitize.ps1`, or
 `.venv\Scripts\python.exe -m cvdigitize` if you'd rather call Python directly.)
 
+### Guided digitization — when a figure is too tangled to auto-trace
+
+For the genuinely hard cases (a bundle of 8 near-identical curves, a solid you
+want separated from its dashed twin, a curve lost in a noisy scan), a person
+resolves the *ambiguity* in a few seconds by scribbling roughly along the curve
+they mean — and the tool does the precise part. This is a **separate** tool, not
+wired into the main pipeline:
+
+```powershell
+# 1) export the figure panel to a PNG
+.venv\Scripts\python.exe scripts\trace_guided.py panel paper.pdf 4 -o panel.png
+
+# 2) open tools\trace_assist.html in a browser (offline, nothing uploaded),
+#    load panel.png, add a named curve, and drag roughly along it. Repeat per
+#    curve. Download guides.json.
+
+# 3) turn the rough guides into pixel-accurate curves
+.venv\Scripts\python.exe scripts\trace_guided.py run panel.png guides.json -o out\
+#    -> one <curve>.csv per guide + overlay.png
+```
+
+The scribble only says *which* ink is which curve and the sweep direction; the
+trace snaps to the real ink ([`cvdigitize/guided.py`](cvdigitize/guided.py):
+`extract_near_guide`). On synthetic crossing curves a guide jittered by ±6 px
+still recovers the intended curve to **sub-pixel** accuracy while ignoring the
+one it crosses.
+
 `extract` writes, under `data/out/<pdf>/[panel_x/]`:
 `<curve>.csv` (+ `.json`/`.yaml` when calibrated), `overlay.png`, `curves.png`,
 a top-level `report.json`, and an `index.html` you can open to see everything

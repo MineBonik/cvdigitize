@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cvdigitize · trace assist</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --line:#252b34; --fg:#e7ebf0; --muted:#96a0af;
+    --accent:#2dd4bf; --accent-ink:#062b28;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:baseline;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;margin:0;letter-spacing:-.01em}
+  header .sub{color:var(--muted);font-size:12.5px}
+  .wrap{display:grid;grid-template-columns:300px 1fr;gap:0;min-height:calc(100vh - 52px)}
+  .side{border-right:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+  .stage{padding:16px;overflow:auto;display:flex;justify-content:center;align-items:flex-start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  label.file, button{font:inherit}
+  button{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+         border-radius:8px;padding:8px 12px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input[type=text],input[type=number]{background:#0e1116;color:var(--fg);border:1px solid var(--line);
+       border-radius:8px;padding:7px 9px;font:inherit;width:100%}
+  .file{display:inline-block;background:var(--panel);border:1px dashed var(--line);border-radius:8px;
+        padding:8px 12px;cursor:pointer;text-align:center}
+  .file input{display:none}
+  .muted{color:var(--muted);font-size:12.5px}
+  ul.curves{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+  ul.curves li{display:flex;align-items:center;gap:8px;background:#0e1116;border:1px solid var(--line);
+       border-radius:8px;padding:6px 8px}
+  ul.curves li.active{border-color:var(--accent)}
+  .swatch{width:14px;height:14px;border-radius:4px;flex:0 0 auto}
+  ul.curves .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  ul.curves .cnt{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+  ul.curves button{padding:3px 7px;font-size:12px}
+  canvas{background:#fff;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);cursor:crosshair;
+         touch-action:none;max-width:100%}
+  kbd{background:#0e1116;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
+      padding:1px 6px;font:12px var(--mono,monospace)}
+  .hint{font-size:12.5px;color:var(--muted)}
+  .hint b{color:var(--fg)}
+</style>
+</head>
+<body>
+<header>
+  <h1>cvdigitize · trace assist</h1>
+  <span class="sub">rough scribble in → pixel-accurate curve out</span>
+</header>
+
+<div class="wrap">
+  <aside class="side">
+    <div class="card">
+      <div class="muted" style="margin-bottom:8px">1 · Load the figure panel</div>
+      <label class="file">Choose panel image (PNG)
+        <input id="imgFile" type="file" accept="image/png,image/jpeg">
+      </label>
+      <div id="imgInfo" class="muted" style="margin-top:8px">no image loaded</div>
+    </div>
+
+    <div class="card">
+      <div class="muted" style="margin-bottom:8px">2 · Curves to trace</div>
+      <div class="row">
+        <input id="curveName" type="text" placeholder="curve name (e.g. Pt(111))">
+        <button id="addCurve" class="primary">Add</button>
+      </div>
+      <ul id="curveList" class="curves" style="margin-top:10px"></ul>
+      <div class="hint" style="margin-top:8px">
+        Select a curve, then <b>drag</b> roughly along it in the image.
+        Draw several strokes if you like. <kbd>U</kbd> undoes the last stroke.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted" style="margin-bottom:8px">3 · Export</div>
+      <div class="row">
+        <button id="exportBtn" disabled>Download guides.json</button>
+        <label class="file" style="flex:1">Load guides.json
+          <input id="loadJson" type="file" accept="application/json,.json">
+        </label>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        Then run:<br><kbd>cvdigitize guided panel.png guides.json</kbd>
+      </div>
+    </div>
+    <div class="muted" style="font-size:11.5px">
+      Everything runs locally in your browser — nothing is uploaded.
+    </div>
+  </aside>
+
+  <main class="stage">
+    <canvas id="cv" width="800" height="500"></canvas>
+  </main>
+</div>
+
+<script>
+const PALETTE = ["#2dd4bf","#f97316","#a78bfa","#f43f5e","#22c55e","#38bdf8",
+                 "#eab308","#ec4899","#14b8a6","#fb7185"];
+let img = null, scale = 1;
+let curves = [];           // {name, color, strokes:[[[x,y],...]]}  x,y in IMAGE px
+let active = -1;
+let drawing = false;
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const imgFile = document.getElementById("imgFile");
+const imgInfo = document.getElementById("imgInfo");
+const curveName = document.getElementById("curveName");
+const addCurve = document.getElementById("addCurve");
+const curveList = document.getElementById("curveList");
+const exportBtn = document.getElementById("exportBtn");
+const loadJson = document.getElementById("loadJson");
+
+imgFile.addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const im = new Image();
+  im.onload = () => {
+    img = im;
+    const maxW = Math.min(1100, window.innerWidth - 360);
+    scale = Math.min(1, maxW / im.naturalWidth);
+    cv.width = Math.round(im.naturalWidth * scale);
+    cv.height = Math.round(im.naturalHeight * scale);
+    imgInfo.textContent = `${im.naturalWidth}×${im.naturalHeight}px  (shown at ${(scale*100)|0}%)`;
+    redraw();
+  };
+  im.src = URL.createObjectURL(f);
+});
+
+addCurve.addEventListener("click", () => {
+  const name = curveName.value.trim() || `curve ${curves.length + 1}`;
+  curves.push({ name, color: PALETTE[curves.length % PALETTE.length], strokes: [] });
+  active = curves.length - 1;
+  curveName.value = "";
+  renderList(); redraw(); updateExport();
+});
+curveName.addEventListener("keydown", e => { if (e.key === "Enter") addCurve.click(); });
+
+function renderList() {
+  curveList.innerHTML = "";
+  curves.forEach((c, i) => {
+    const li = document.createElement("li");
+    if (i === active) li.className = "active";
+    const n = c.strokes.reduce((s, st) => s + st.length, 0);
+    li.innerHTML = `<span class="swatch" style="background:${c.color}"></span>
+      <span class="nm">${escapeHtml(c.name)}</span><span class="cnt">${n}</span>`;
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "delete curve";
+    del.onclick = (ev) => { ev.stopPropagation(); curves.splice(i, 1);
+      active = Math.min(active, curves.length - 1); renderList(); redraw(); updateExport(); };
+    li.appendChild(del);
+    li.onclick = () => { active = i; renderList(); redraw(); };
+    curveList.appendChild(li);
+  });
+}
+
+function canvasPos(e) {
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (cv.width / r.width);
+  const y = (e.clientY - r.top) * (cv.height / r.height);
+  return [x / scale, y / scale];      // -> IMAGE pixel coords
+}
+
+cv.addEventListener("pointerdown", e => {
+  if (active < 0 || !img) return;
+  drawing = true; cv.setPointerCapture(e.pointerId);
+  curves[active].strokes.push([canvasPos(e)]);
+});
+cv.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  const st = curves[active].strokes;
+  st[st.length - 1].push(canvasPos(e));
+  redraw();
+});
+cv.addEventListener("pointerup", () => { drawing = false; renderList(); updateExport(); });
+
+document.addEventListener("keydown", e => {
+  if (e.key === "u" || e.key === "U") {
+    if (active >= 0 && curves[active].strokes.length) {
+      curves[active].strokes.pop(); redraw(); renderList(); updateExport();
+    }
+  }
+});
+
+function redraw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (img) ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  curves.forEach((c, i) => {
+    ctx.strokeStyle = c.color;
+    ctx.lineWidth = (i === active) ? 3 : 2;
+    ctx.lineJoin = ctx.lineCap = "round";
+    ctx.globalAlpha = (i === active) ? 0.95 : 0.6;
+    c.strokes.forEach(st => {
+      ctx.beginPath();
+      st.forEach((p, k) => { const x = p[0]*scale, y = p[1]*scale;
+        k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke();
+    });
+  });
+  ctx.globalAlpha = 1;
+}
+
+function updateExport() {
+  exportBtn.disabled = !curves.some(c => c.strokes.some(s => s.length > 1));
+}
+
+exportBtn.addEventListener("click", () => {
+  const guides = curves
+    .map(c => ({ name: c.name,
+                 points: [].concat(...c.strokes).map(p => [Math.round(p[0]), Math.round(p[1])]) }))
+    .filter(g => g.points.length > 1);
+  const blob = new Blob([JSON.stringify({ guides }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "guides.json"; a.click();
+});
+
+loadJson.addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const data = JSON.parse(rd.result);
+      curves = (data.guides || []).map((g, i) => ({
+        name: g.name || `curve ${i+1}`, color: PALETTE[i % PALETTE.length],
+        strokes: [g.points.map(p => [p[0], p[1]])] }));
+      active = curves.length - 1; renderList(); redraw(); updateExport();
+    } catch (err) { alert("Could not read guides.json: " + err.message); }
+  };
+  rd.readAsText(f);
+});
+
+function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+renderList();
+</script>
+</body>
+</html>
