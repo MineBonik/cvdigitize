@@ -7,238 +7,412 @@
 <style>
   :root{
     --bg:#0f1216; --panel:#171b21; --line:#252b34; --fg:#e7ebf0; --muted:#96a0af;
-    --accent:#2dd4bf; --accent-ink:#062b28;
+    --accent:#2dd4bf; --accent-ink:#062b28; --warn:#f59e0b; --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-  header{display:flex;align-items:baseline;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  header{display:flex;align-items:baseline;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
   header h1{font-size:16px;margin:0;letter-spacing:-.01em}
   header .sub{color:var(--muted);font-size:12.5px}
-  .wrap{display:grid;grid-template-columns:300px 1fr;gap:0;min-height:calc(100vh - 52px)}
-  .side{border-right:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:14px;overflow:auto}
-  .stage{padding:16px;overflow:auto;display:flex;justify-content:center;align-items:flex-start}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
-  label.file, button{font:inherit}
-  button{background:var(--panel);color:var(--fg);border:1px solid var(--line);
-         border-radius:8px;padding:8px 12px;cursor:pointer}
+  .wrap{display:grid;grid-template-columns:310px 1fr;min-height:calc(100vh - 50px)}
+  .side{border-right:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+  .stage{position:relative;overflow:hidden;background:#0b0e12;display:flex}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px}
+  .card .hd{color:var(--muted);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em}
+  button{font:inherit;background:var(--panel);color:var(--fg);border:1px solid var(--line);
+         border-radius:8px;padding:7px 10px;cursor:pointer}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+  button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
   button:disabled{opacity:.45;cursor:not-allowed}
-  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
   input[type=text],input[type=number]{background:#0e1116;color:var(--fg);border:1px solid var(--line);
-       border-radius:8px;padding:7px 9px;font:inherit;width:100%}
+       border-radius:8px;padding:6px 8px;font:inherit;min-width:0}
+  input[type=range]{accent-color:var(--accent);width:100%}
   .file{display:inline-block;background:var(--panel);border:1px dashed var(--line);border-radius:8px;
-        padding:8px 12px;cursor:pointer;text-align:center}
+        padding:8px 10px;cursor:pointer;text-align:center;font-size:13px}
   .file input{display:none}
-  .muted{color:var(--muted);font-size:12.5px}
-  ul.curves{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-  ul.curves li{display:flex;align-items:center;gap:8px;background:#0e1116;border:1px solid var(--line);
-       border-radius:8px;padding:6px 8px}
-  ul.curves li.active{border-color:var(--accent)}
-  .swatch{width:14px;height:14px;border-radius:4px;flex:0 0 auto}
-  ul.curves .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  ul.curves .cnt{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
-  ul.curves button{padding:3px 7px;font-size:12px}
-  canvas{background:#fff;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);cursor:crosshair;
-         touch-action:none;max-width:100%}
+  .muted{color:var(--muted);font-size:12px}
+  ul.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+  ul.list li{display:flex;align-items:center;gap:8px;background:#0e1116;border:1px solid var(--line);
+       border-radius:8px;padding:5px 8px;cursor:pointer}
+  ul.list li.active{border-color:var(--accent)}
+  .swatch{width:13px;height:13px;border-radius:4px;flex:0 0 auto}
+  ul.list .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  ul.list .cnt{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  ul.list button{padding:2px 6px;font-size:11px}
+  .gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:190px;overflow:auto}
+  .gallery .thumb{border:1px solid var(--line);border-radius:6px;overflow:hidden;cursor:pointer;background:#fff}
+  .gallery .thumb.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+  .gallery .thumb img{display:block;width:100%;height:52px;object-fit:cover}
+  canvas{position:absolute;top:0;left:0;touch-action:none}
   kbd{background:#0e1116;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
-      padding:1px 6px;font:12px var(--mono,monospace)}
-  .hint{font-size:12.5px;color:var(--muted)}
+      padding:1px 5px;font:12px var(--mono)}
+  .hint{font-size:12px;color:var(--muted)}
   .hint b{color:var(--fg)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;flex:1}
+  .seg button+button{border-left:1px solid var(--line)}
+  .cal-grid{display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;align-items:center}
+  .cal-grid label{font-size:12px;color:var(--muted)}
+  .cal-grid .set{font-size:11px;padding:4px 7px}
+  .cal-grid .set.done{border-color:var(--accent);color:var(--accent)}
+  .zbadge{position:absolute;bottom:10px;left:12px;background:rgba(0,0,0,.6);border:1px solid var(--line);
+          border-radius:6px;padding:3px 8px;font:12px var(--mono);color:var(--muted)}
+  .modehelp{position:absolute;top:10px;left:12px;background:rgba(0,0,0,.6);border:1px solid var(--line);
+          border-radius:6px;padding:4px 9px;font-size:12px;color:var(--fg);max-width:60ch}
 </style>
 </head>
 <body>
 <header>
   <h1>cvdigitize · trace assist</h1>
-  <span class="sub">rough scribble in → pixel-accurate curve out</span>
+  <span class="sub">raster figures only — rough scribble in → pixel-accurate curve out (vector figures: use <kbd>python -m cvdigitize</kbd>)</span>
 </header>
 
 <div class="wrap">
   <aside class="side">
     <div class="card">
-      <div class="muted" style="margin-bottom:8px">1 · Load the figure panel</div>
-      <label class="file">Choose panel image (PNG)
-        <input id="imgFile" type="file" accept="image/png,image/jpeg">
-      </label>
-      <div id="imgInfo" class="muted" style="margin-top:8px">no image loaded</div>
+      <div class="hd">1 · Load figures</div>
+      <div class="row">
+        <label class="file" style="flex:1">Open image(s)
+          <input id="imgFile" type="file" accept="image/png,image/jpeg" multiple>
+        </label>
+        <label class="file" style="flex:1">Open a folder
+          <input id="dirFile" type="file" webkitdirectory directory multiple>
+        </label>
+      </div>
+      <div id="gallery" class="gallery" style="margin-top:9px"></div>
+      <div id="imgInfo" class="muted" style="margin-top:7px">no image loaded</div>
     </div>
 
     <div class="card">
-      <div class="muted" style="margin-bottom:8px">2 · Curves to trace</div>
+      <div class="hd">2 · Mode &amp; brush</div>
+      <div class="seg" id="modeSeg">
+        <button data-mode="draw" class="on">✎ Trace</button>
+        <button data-mode="calib">⌖ Calibrate</button>
+        <button data-mode="pan">✋ Pan</button>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <span class="muted">Brush</span>
+        <input id="brush" type="range" min="4" max="40" value="12" style="flex:1">
+        <span id="brushVal" class="muted" style="font-variant-numeric:tabular-nums">12&nbsp;px</span>
+      </div>
+      <div class="hint" style="margin-top:6px">
+        Scroll = zoom · drag in <b>Pan</b> (or hold <kbd>Space</kbd>) = move · <kbd>0</kbd> = fit
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="hd">3 · Curves to trace</div>
       <div class="row">
-        <input id="curveName" type="text" placeholder="curve name (e.g. Pt(111))">
+        <input id="curveName" type="text" placeholder="name (e.g. Pt(111))" style="flex:1">
         <button id="addCurve" class="primary">Add</button>
       </div>
-      <ul id="curveList" class="curves" style="margin-top:10px"></ul>
-      <div class="hint" style="margin-top:8px">
-        Select a curve, then <b>drag</b> roughly along it in the image.
-        Draw several strokes if you like. <kbd>U</kbd> undoes the last stroke.
+      <ul id="curveList" class="list" style="margin-top:9px"></ul>
+      <div class="hint" style="margin-top:7px">
+        Pick a curve, then <b>drag</b> roughly along it (several strokes ok).
+        <kbd>U</kbd> undo stroke.
       </div>
     </div>
 
     <div class="card">
-      <div class="muted" style="margin-bottom:8px">3 · Export</div>
+      <div class="hd">4 · Calibration <span class="muted">(optional → real units)</span></div>
+      <div class="hint" style="margin-bottom:8px">
+        In <b>Calibrate</b> mode, click each axis point, then type its value.
+      </div>
+      <div class="cal-grid">
+        <label>E₁</label><input id="E1v" type="number" step="any" placeholder="V, e.g. 0"><button class="set" data-anchor="E1">set pt</button>
+        <label>E₂</label><input id="E2v" type="number" step="any" placeholder="V, e.g. 1"><button class="set" data-anchor="E2">set pt</button>
+        <label>j₁</label><input id="j1v" type="number" step="any" placeholder="e.g. -150"><button class="set" data-anchor="j1">set pt</button>
+        <label>j₂</label><input id="j2v" type="number" step="any" placeholder="e.g. 150"><button class="set" data-anchor="j2">set pt</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="Eunit" type="text" value="V" title="E unit" style="width:52px">
+        <input id="Eref" type="text" value="RHE" placeholder="ref" title="reference electrode" style="width:64px">
+        <input id="junit" type="text" value="uA/cm2" title="j unit" style="flex:1">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="hd">5 · Export</div>
       <div class="row">
-        <button id="exportBtn" disabled>Download guides.json</button>
-        <label class="file" style="flex:1">Load guides.json
+        <button id="exportBtn" class="primary" disabled>Download guides.json</button>
+        <label class="file">Load
           <input id="loadJson" type="file" accept="application/json,.json">
         </label>
       </div>
-      <div class="hint" style="margin-top:8px">
-        Then run:<br><kbd>cvdigitize guided panel.png guides.json</kbd>
+      <div class="hint" style="margin-top:7px">
+        Then:<br><kbd>python scripts/trace_guided.py run panel.png guides.json -o out/</kbd>
       </div>
     </div>
-    <div class="muted" style="font-size:11.5px">
-      Everything runs locally in your browser — nothing is uploaded.
-    </div>
+    <div class="muted" style="font-size:11px">Runs entirely in your browser — nothing is uploaded.</div>
   </aside>
 
-  <main class="stage">
-    <canvas id="cv" width="800" height="500"></canvas>
+  <main class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="modehelp" id="modehelp"></div>
+    <div class="zbadge" id="zbadge">fit</div>
   </main>
 </div>
 
 <script>
 const PALETTE = ["#2dd4bf","#f97316","#a78bfa","#f43f5e","#22c55e","#38bdf8",
                  "#eab308","#ec4899","#14b8a6","#fb7185"];
-let img = null, scale = 1;
-let curves = [];           // {name, color, strokes:[[[x,y],...]]}  x,y in IMAGE px
-let active = -1;
-let drawing = false;
+// Each panel keeps its own curves + calibration so you can switch between figures.
+let panels = [];       // {name, image, curves:[{name,color,radius,strokes:[[[x,y]..]..]}], calib:{E1:{px},...}}
+let pi = -1;           // active panel index
+let active = -1;       // active curve index (within panel)
+let mode = "draw";     // draw | calib | pan
+let brush = 12;
+let view = {z:1, ox:0, oy:0};   // zoom + offset (image px -> screen)
+let drawing = false, panning = false, spaceDown = false;
 
+const stage = document.getElementById("stage");
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d");
-const imgFile = document.getElementById("imgFile");
-const imgInfo = document.getElementById("imgInfo");
-const curveName = document.getElementById("curveName");
-const addCurve = document.getElementById("addCurve");
-const curveList = document.getElementById("curveList");
-const exportBtn = document.getElementById("exportBtn");
-const loadJson = document.getElementById("loadJson");
+const $ = id => document.getElementById(id);
 
-imgFile.addEventListener("change", e => {
-  const f = e.target.files[0]; if (!f) return;
+function P(){ return pi>=0 ? panels[pi] : null; }
+function fitView(){
+  const p = P(); if(!p) return;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  const z = Math.min(w/p.image.naturalWidth, h/p.image.naturalHeight) * 0.96;
+  view.z = z;
+  view.ox = (w - p.image.naturalWidth*z)/2;
+  view.oy = (h - p.image.naturalHeight*z)/2;
+}
+function resizeCanvas(){ cv.width = stage.clientWidth; cv.height = stage.clientHeight; }
+window.addEventListener("resize", () => { resizeCanvas(); redraw(); });
+
+// ---- coordinate transforms (image px <-> screen px) ----
+const toScreen = (x,y) => [x*view.z + view.ox, y*view.z + view.oy];
+const toImage  = (sx,sy) => [(sx-view.ox)/view.z, (sy-view.oy)/view.z];
+function evPos(e){ const r = cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
+
+// ---- image loading ----
+function addPanel(name, url){
   const im = new Image();
   im.onload = () => {
-    img = im;
-    const maxW = Math.min(1100, window.innerWidth - 360);
-    scale = Math.min(1, maxW / im.naturalWidth);
-    cv.width = Math.round(im.naturalWidth * scale);
-    cv.height = Math.round(im.naturalHeight * scale);
-    imgInfo.textContent = `${im.naturalWidth}×${im.naturalHeight}px  (shown at ${(scale*100)|0}%)`;
-    redraw();
+    panels.push({name, image:im, curves:[], calib:{}});
+    if(pi<0){ pi = 0; fitView(); }
+    renderGallery(); renderCurves(); redraw(); updateExport();
   };
-  im.src = URL.createObjectURL(f);
+  im.src = url;
+}
+$("imgFile").addEventListener("change", e => {
+  [...e.target.files].forEach(f => addPanel(f.name, URL.createObjectURL(f)));
+});
+$("dirFile").addEventListener("change", e => {
+  [...e.target.files]
+    .filter(f => /\.(png|jpe?g)$/i.test(f.name))
+    .sort((a,b)=>a.name.localeCompare(b.name))
+    .forEach(f => addPanel(f.name, URL.createObjectURL(f)));
 });
 
-addCurve.addEventListener("click", () => {
-  const name = curveName.value.trim() || `curve ${curves.length + 1}`;
-  curves.push({ name, color: PALETTE[curves.length % PALETTE.length], strokes: [] });
-  active = curves.length - 1;
-  curveName.value = "";
-  renderList(); redraw(); updateExport();
-});
-curveName.addEventListener("keydown", e => { if (e.key === "Enter") addCurve.click(); });
+function renderGallery(){
+  const g = $("gallery"); g.innerHTML = "";
+  panels.forEach((p,i) => {
+    const d = document.createElement("div");
+    d.className = "thumb" + (i===pi?" active":"");
+    d.title = p.name;
+    const im = document.createElement("img"); im.src = p.image.src; d.appendChild(im);
+    d.onclick = () => { pi=i; active=-1; fitView(); renderGallery(); renderCurves(); redraw(); updateExport(); };
+    g.appendChild(d);
+  });
+  const p = P();
+  $("imgInfo").textContent = p ? `${p.name} — ${p.image.naturalWidth}×${p.image.naturalHeight}px` : "no image loaded";
+}
 
-function renderList() {
-  curveList.innerHTML = "";
-  curves.forEach((c, i) => {
+// ---- mode + brush ----
+$("modeSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  mode = b.dataset.mode;
+  [...$("modeSeg").children].forEach(x => x.classList.toggle("on", x===b));
+  cv.style.cursor = mode==="pan" ? "grab" : (mode==="calib" ? "cell" : "crosshair");
+  updateModeHelp();
+});
+$("brush").addEventListener("input", e => { brush = +e.target.value; $("brushVal").textContent = brush+" px"; redraw(); });
+function updateModeHelp(){
+  const m = {draw:"Trace: drag roughly along a curve. Brush width = snap corridor.",
+             calib:"Calibrate: click an axis point below, then type its value.",
+             pan:"Pan: drag to move, scroll to zoom."};
+  $("modehelp").textContent = m[mode] || "";
+}
+
+// ---- curves ----
+$("addCurve").addEventListener("click", () => {
+  const p = P(); if(!p){ alert("Load a figure first."); return; }
+  const name = $("curveName").value.trim() || `curve ${p.curves.length+1}`;
+  p.curves.push({name, color:PALETTE[p.curves.length%PALETTE.length], radius:brush, strokes:[]});
+  active = p.curves.length-1; $("curveName").value="";
+  renderCurves(); redraw(); updateExport();
+});
+$("curveName").addEventListener("keydown", e => { if(e.key==="Enter") $("addCurve").click(); });
+
+function renderCurves(){
+  const list = $("curveList"); list.innerHTML = "";
+  const p = P(); if(!p) return;
+  p.curves.forEach((c,i) => {
     const li = document.createElement("li");
-    if (i === active) li.className = "active";
-    const n = c.strokes.reduce((s, st) => s + st.length, 0);
+    if(i===active) li.className = "active";
+    const n = c.strokes.reduce((s,st)=>s+st.length,0);
     li.innerHTML = `<span class="swatch" style="background:${c.color}"></span>
-      <span class="nm">${escapeHtml(c.name)}</span><span class="cnt">${n}</span>`;
-    const del = document.createElement("button");
-    del.textContent = "✕";
-    del.title = "delete curve";
-    del.onclick = (ev) => { ev.stopPropagation(); curves.splice(i, 1);
-      active = Math.min(active, curves.length - 1); renderList(); redraw(); updateExport(); };
+      <span class="nm">${esc(c.name)}</span><span class="cnt">${n}</span>`;
+    const del = document.createElement("button"); del.textContent="✕"; del.title="delete";
+    del.onclick = ev => { ev.stopPropagation(); p.curves.splice(i,1);
+      active=Math.min(active,p.curves.length-1); renderCurves(); redraw(); updateExport(); };
     li.appendChild(del);
-    li.onclick = () => { active = i; renderList(); redraw(); };
-    curveList.appendChild(li);
+    li.onclick = () => { active=i; renderCurves(); redraw(); };
+    list.appendChild(li);
   });
 }
 
-function canvasPos(e) {
-  const r = cv.getBoundingClientRect();
-  const x = (e.clientX - r.left) * (cv.width / r.width);
-  const y = (e.clientY - r.top) * (cv.height / r.height);
-  return [x / scale, y / scale];      // -> IMAGE pixel coords
-}
-
+// ---- pointer interaction ----
 cv.addEventListener("pointerdown", e => {
-  if (active < 0 || !img) return;
-  drawing = true; cv.setPointerCapture(e.pointerId);
-  curves[active].strokes.push([canvasPos(e)]);
+  const p = P(); if(!p) return;
+  cv.setPointerCapture(e.pointerId);
+  const [sx,sy] = evPos(e);
+  if(mode==="pan" || spaceDown || e.button===1){ panning=true; cv._last=[sx,sy]; cv.style.cursor="grabbing"; return; }
+  if(mode==="calib"){ placeCalib(toImage(sx,sy)); return; }
+  // draw
+  if(active<0){ return; }
+  p.curves[active].radius = brush;
+  drawing=true; p.curves[active].strokes.push([toImage(sx,sy)]);
 });
 cv.addEventListener("pointermove", e => {
-  if (!drawing) return;
-  const st = curves[active].strokes;
-  st[st.length - 1].push(canvasPos(e));
-  redraw();
+  const [sx,sy] = evPos(e);
+  if(panning){ view.ox += sx-cv._last[0]; view.oy += sy-cv._last[1]; cv._last=[sx,sy]; redraw(); return; }
+  if(drawing){ const st=P().curves[active].strokes; st[st.length-1].push(toImage(sx,sy)); redraw(); }
 });
-cv.addEventListener("pointerup", () => { drawing = false; renderList(); updateExport(); });
+cv.addEventListener("pointerup", () => {
+  drawing=false; panning=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"crosshair");
+  renderCurves(); updateExport();
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const [sx,sy] = evPos(e);
+  const [ix,iy] = toImage(sx,sy);
+  const f = Math.exp(-e.deltaY*0.0012);
+  view.z = Math.max(0.05, Math.min(30, view.z*f));
+  // keep the point under the cursor fixed
+  view.ox = sx - ix*view.z; view.oy = sy - iy*view.z;
+  redraw();
+}, {passive:false});
 
 document.addEventListener("keydown", e => {
-  if (e.key === "u" || e.key === "U") {
-    if (active >= 0 && curves[active].strokes.length) {
-      curves[active].strokes.pop(); redraw(); renderList(); updateExport();
-    }
-  }
+  if(e.code==="Space"){ spaceDown=true; cv.style.cursor="grab"; }
+  if(e.key==="0"){ fitView(); redraw(); }
+  if(e.key==="u"||e.key==="U"){ const p=P();
+    if(p && active>=0 && p.curves[active].strokes.length){ p.curves[active].strokes.pop(); redraw(); renderCurves(); updateExport(); } }
 });
+document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"crosshair"); } });
 
-function redraw() {
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  if (img) ctx.drawImage(img, 0, 0, cv.width, cv.height);
-  curves.forEach((c, i) => {
-    ctx.strokeStyle = c.color;
-    ctx.lineWidth = (i === active) ? 3 : 2;
-    ctx.lineJoin = ctx.lineCap = "round";
-    ctx.globalAlpha = (i === active) ? 0.95 : 0.6;
-    c.strokes.forEach(st => {
-      ctx.beginPath();
-      st.forEach((p, k) => { const x = p[0]*scale, y = p[1]*scale;
-        k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.stroke();
-    });
+// ---- calibration ----
+let pendingAnchor = null;
+document.querySelectorAll(".set").forEach(b => b.addEventListener("click", () => {
+  if(mode!=="calib"){ alert("Switch to Calibrate mode first, then click the point in the image."); return; }
+  pendingAnchor = b.dataset.anchor;
+  document.querySelectorAll(".set").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+}));
+function placeCalib(imgpt){
+  const p = P(); if(!p || !pendingAnchor) return;
+  p.calib[pendingAnchor] = {px:[Math.round(imgpt[0]), Math.round(imgpt[1])]};
+  const btn = document.querySelector(`.set[data-anchor="${pendingAnchor}"]`);
+  btn.classList.remove("on"); btn.classList.add("done"); btn.textContent="✓ pt";
+  pendingAnchor=null; redraw(); updateExport();
+}
+
+// ---- rendering ----
+function redraw(){
+  resizeCanvasIfNeeded();
+  ctx.clearRect(0,0,cv.width,cv.height);
+  const p = P(); if(!p) return;
+  ctx.imageSmoothingEnabled = view.z < 2;
+  const [ox,oy] = [view.ox, view.oy];
+  ctx.drawImage(p.image, ox, oy, p.image.naturalWidth*view.z, p.image.naturalHeight*view.z);
+  // curves
+  p.curves.forEach((c,i) => {
+    ctx.strokeStyle = c.color; ctx.lineJoin=ctx.lineCap="round";
+    ctx.lineWidth = Math.max(2, (i===active?c.radius:c.radius*0.7)*view.z*0.5);
+    ctx.globalAlpha = i===active ? 0.5 : 0.3;
+    c.strokes.forEach(st => { ctx.beginPath();
+      st.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+    // thin centre line
+    ctx.globalAlpha = i===active?1:0.6; ctx.lineWidth = i===active?2:1.2;
+    c.strokes.forEach(st => { ctx.beginPath();
+      st.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
   });
   ctx.globalAlpha = 1;
+  // calibration markers
+  const marks = {E1:"#38bdf8",E2:"#38bdf8",j1:"#f59e0b",j2:"#f59e0b"};
+  Object.entries(p.calib).forEach(([k,v]) => {
+    if(!v||!v.px) return; const [x,y]=toScreen(v.px[0],v.px[1]);
+    ctx.strokeStyle=marks[k]||"#fff"; ctx.fillStyle=marks[k]||"#fff"; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(x-8,y); ctx.lineTo(x+8,y); ctx.moveTo(x,y-8); ctx.lineTo(x,y+8); ctx.stroke();
+    ctx.font="12px sans-serif"; ctx.fillText(k, x+9, y-4);
+  });
+  $("zbadge").textContent = Math.round(view.z*100)+"%";
 }
+function resizeCanvasIfNeeded(){ if(cv.width!==stage.clientWidth||cv.height!==stage.clientHeight) resizeCanvas(); }
 
-function updateExport() {
-  exportBtn.disabled = !curves.some(c => c.strokes.some(s => s.length > 1));
-}
-
-exportBtn.addEventListener("click", () => {
-  const round = p => [Math.round(p[0]), Math.round(p[1])];
-  const guides = curves
-    .map(c => ({ name: c.name,
-                 strokes: c.strokes.filter(s => s.length > 1).map(s => s.map(round)) }))
-    .filter(g => g.strokes.length > 0);
-  const blob = new Blob([JSON.stringify({ guides }, null, 2)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = "guides.json"; a.click();
-});
-
-loadJson.addEventListener("change", e => {
-  const f = e.target.files[0]; if (!f) return;
-  const rd = new FileReader();
-  rd.onload = () => {
-    try {
-      const data = JSON.parse(rd.result);
-      curves = (data.guides || []).map((g, i) => ({
-        name: g.name || `curve ${i+1}`, color: PALETTE[i % PALETTE.length],
-        strokes: g.strokes ? g.strokes.map(s => s.map(p => [p[0], p[1]]))
-                            : [g.points.map(p => [p[0], p[1]])] }));
-      active = curves.length - 1; renderList(); redraw(); updateExport();
-    } catch (err) { alert("Could not read guides.json: " + err.message); }
+// ---- export / import ----
+function collectCalib(){
+  const p = P(); const c = p.calib;
+  const need = ["E1","E2","j1","j2"];
+  if(!need.every(k => c[k] && c[k].px)) return null;
+  const val = id => { const v = parseFloat($(id).value); return isNaN(v)?null:v; };
+  const vals = {E1:val("E1v"),E2:val("E2v"),j1:val("j1v"),j2:val("j2v")};
+  if(Object.values(vals).some(v => v===null)) return null;
+  return {
+    E1:{px:c.E1.px,value:vals.E1}, E2:{px:c.E2.px,value:vals.E2},
+    j1:{px:c.j1.px,value:vals.j1}, j2:{px:c.j2.px,value:vals.j2},
+    E_unit:$("Eunit").value.trim()||"V", E_ref:$("Eref").value.trim(),
+    j_unit:$("junit").value.trim()
   };
+}
+function updateExport(){
+  const p = P();
+  const has = p && p.curves.some(c => c.strokes.some(s => s.length>1));
+  $("exportBtn").disabled = !has;
+}
+$("exportBtn").addEventListener("click", () => {
+  const p = P(); if(!p) return;
+  const round = pt => [Math.round(pt[0]), Math.round(pt[1])];
+  const guides = p.curves
+    .map(c => ({name:c.name, radius:c.radius,
+                strokes:c.strokes.filter(s=>s.length>1).map(s=>s.map(round))}))
+    .filter(g => g.strokes.length>0);
+  const out = {panel:p.name, guides};
+  const cal = collectCalib();
+  if(cal) out.calibration = cal;
+  const blob = new Blob([JSON.stringify(out,null,2)], {type:"application/json"});
+  const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download = (p.name.replace(/\.(png|jpe?g)$/i,"")||"guides")+"_guides.json"; a.click();
+});
+$("loadJson").addEventListener("change", e => {
+  const f = e.target.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { try {
+    const d = JSON.parse(rd.result);
+    const p = P(); if(!p){ alert("Load the figure image first, then the guides."); return; }
+    p.curves = (d.guides||[]).map((g,i)=>({name:g.name||`curve ${i+1}`, color:PALETTE[i%PALETTE.length],
+      radius:g.radius||brush,
+      strokes: g.strokes ? g.strokes.map(s=>s.map(pt=>[pt[0],pt[1]])) : [g.points.map(pt=>[pt[0],pt[1]])]}));
+    if(d.calibration){ const c=d.calibration;
+      ["E1","E2","j1","j2"].forEach(k=>{ if(c[k]&&c[k].px){ p.calib[k]={px:c[k].px};
+        const btn=document.querySelector(`.set[data-anchor="${k}"]`); btn.classList.add("done"); btn.textContent="✓ pt";
+        $(k+"v").value = c[k].value; }});
+      $("Eunit").value=c.E_unit||"V"; $("Eref").value=c.E_ref||""; $("junit").value=c.j_unit||"";
+    }
+    active = p.curves.length-1; renderCurves(); redraw(); updateExport();
+  } catch(err){ alert("Could not read guides.json: "+err.message); } };
   rd.readAsText(f);
 });
 
-function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-renderList();
+function esc(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+resizeCanvas(); updateModeHelp(); renderCurves();
 </script>
 </body>
 </html>

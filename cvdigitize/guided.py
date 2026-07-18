@@ -180,15 +180,20 @@ def extract_guides(rgb: np.ndarray, guides: list[dict], *, return_gaps: bool = F
 
     ``guides`` is ``[{"name": str, "points": [...]}, ...]`` or
     ``[{"name": str, "strokes": [[...], [...]]}, ...]`` (as exported by the
-    trace-assist tool). Returns ``[{"name", "polyline_px"[, "gaps"]}, ...]``,
-    skipping any guide that yields no ink. With ``return_gaps=True`` each result
-    also carries the untraced-span list from :func:`extract_near_guide`.
+    trace-assist tool). A guide may carry its own ``"radius"`` (the brush size
+    used to draw it), which overrides the ``radius`` in ``kw`` for that curve.
+    Returns ``[{"name", "polyline_px"[, "gaps"]}, ...]``, skipping any guide that
+    yields no ink. With ``return_gaps=True`` each result also carries the
+    untraced-span list from :func:`extract_near_guide`.
     """
     out = []
     for g in guides:
         src = {"strokes": g["strokes"]} if g.get("strokes") else {}
         guide_arg = None if src else g["points"]
-        res = extract_near_guide(rgb, guide_arg, return_gaps=return_gaps, **src, **kw)
+        gkw = dict(kw)
+        if g.get("radius"):
+            gkw["radius"] = int(g["radius"])
+        res = extract_near_guide(rgb, guide_arg, return_gaps=return_gaps, **src, **gkw)
         poly, gaps = res if return_gaps else (res, None)
         if len(poly):
             item = {"name": g.get("name", ""), "polyline_px": poly}
