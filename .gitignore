@@ -27,3 +27,6 @@ data/echemdb/
 
 # Copyrighted source papers supplied for benchmarking - not part of this repo
 data/papers_additional_after_request/
+
+# Claude Code local dev config (launch.json etc.)
+.claude/
