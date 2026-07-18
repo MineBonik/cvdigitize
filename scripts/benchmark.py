@@ -293,7 +293,7 @@ def raster_curves(pdf: str, page: int) -> list[np.ndarray]:
     for region in regions:
         got = False
         try:
-            results = extract_all_panel_curves(pdf, page, region.bbox)
+            results = extract_all_panel_curves(pdf, page, region.bbox, include_legacy=True)
         except Exception:
             results = []
         for res in results:

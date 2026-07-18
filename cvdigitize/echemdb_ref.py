@@ -451,7 +451,8 @@ def parse_reference_svg(path: str) -> ReferenceCurve | None:
 
 def _parse_name(base: str) -> tuple[str, str]:
     """Split an echemdb basename ``<key>_f<fig>_<label>`` -> (fig, label)."""
-    m = re.search(r"_f([0-9a-z]+)_([a-z0-9]+)$", base, re.IGNORECASE)
+    # label may itself contain underscores (e.g. "solid_red"); capture it whole
+    m = re.search(r"_f([0-9a-z]+)_(.+)$", base, re.IGNORECASE)
     if m:
         return m.group(1), m.group(2)
     return "", ""
