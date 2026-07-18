@@ -211,10 +211,11 @@ function updateExport() {
 }
 
 exportBtn.addEventListener("click", () => {
+  const round = p => [Math.round(p[0]), Math.round(p[1])];
   const guides = curves
     .map(c => ({ name: c.name,
-                 points: [].concat(...c.strokes).map(p => [Math.round(p[0]), Math.round(p[1])]) }))
-    .filter(g => g.points.length > 1);
+                 strokes: c.strokes.filter(s => s.length > 1).map(s => s.map(round)) }))
+    .filter(g => g.strokes.length > 0);
   const blob = new Blob([JSON.stringify({ guides }, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "guides.json"; a.click();
@@ -228,7 +229,8 @@ loadJson.addEventListener("change", e => {
       const data = JSON.parse(rd.result);
       curves = (data.guides || []).map((g, i) => ({
         name: g.name || `curve ${i+1}`, color: PALETTE[i % PALETTE.length],
-        strokes: [g.points.map(p => [p[0], p[1]])] }));
+        strokes: g.strokes ? g.strokes.map(s => s.map(p => [p[0], p[1]]))
+                            : [g.points.map(p => [p[0], p[1]])] }));
       active = curves.length - 1; renderList(); redraw(); updateExport();
     } catch (err) { alert("Could not read guides.json: " + err.message); }
   };

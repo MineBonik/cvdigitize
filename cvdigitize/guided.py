@@ -59,43 +59,32 @@ def _densify(guide: np.ndarray, step: float = 2.0) -> np.ndarray:
     return np.column_stack([x, y])
 
 
-def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
-                       value_thresh: float = 0.6, resample_n: int = 600
-                       ) -> np.ndarray:
-    """Extract the curve the guide points at, as an (x, y) pixel polyline.
+def split_strokes(points, jump_factor: float = 5.0, min_abs_jump: float = 15.0
+                  ) -> list[np.ndarray]:
+    """Split a flat point list back into separate strokes.
 
-    ``guide_xy`` is a rough (M, 2) polyline in image-pixel coordinates (the human
-    scribble). We densify the guide and, at each position along it, snap to the
-    nearest curve-ink pixel within ``radius`` — so the trace follows the guide's
-    order (hence the sweep, and *both* branches of a loop, which the guide visits
-    in turn) while sitting exactly on the real ink. ``radius`` defaults to ~2 %
-    of the image diagonal, covering a hand-drawn guide's wobble. Returns an empty
-    array if no ink is found along the guide.
+    A human trace is usually drawn as several mouse-drags (pen lifted between
+    them). If the exporter only kept a flat point list with no stroke boundary
+    markers, the gap between the end of one drag and the start of the next
+    still shows up as an outlier-sized step — far bigger than the steady
+    per-sample spacing within a drag — so we split there. This makes the
+    extractor robust to flattened exports; the trace-assist tool now exports
+    real stroke boundaries too, so this is a safety net, not the primary path.
     """
-    if cv2 is None:
-        raise RuntimeError("guided extraction needs OpenCV (opencv-python-headless)")
-    from scipy.spatial import cKDTree
-    from .postprocess import dedupe, resample_arclength
+    pts = np.asarray(points, dtype=float)
+    if len(pts) < 2:
+        return [pts] if len(pts) else []
+    step = np.hypot(*(np.diff(pts, axis=0).T))
+    med = np.median(step) or 1.0
+    thresh = max(min_abs_jump, jump_factor * med)
+    cuts = np.where(step > thresh)[0] + 1
+    return [s for s in np.split(pts, cuts) if len(s) >= 2]
 
-    guide = np.asarray(guide_xy, dtype=float)
-    if len(guide) < 2:
-        return np.empty((0, 2))
-    h, w = rgb.shape[:2]
-    if radius is None:
-        radius = max(6, int(0.02 * np.hypot(h, w)))
 
-    ink = _ink_mask(rgb, value_thresh=value_thresh)
-    corridor = _corridor_mask(rgb.shape, guide, radius)
-    ys, xs = np.where(ink & corridor)
-    if len(xs) < 10:
-        return np.empty((0, 2))
-    ink_pts = np.column_stack([xs, ys]).astype(float)
-    tree = cKDTree(ink_pts)
-
-    # Walk the (densified) guide and, at each position, snap to the nearest ink
-    # pixel within the corridor. The guide gives the order (and visits both
-    # branches of a loop in turn); the snap puts every point on the real ink.
-    dense = _densify(guide, step=2.0)
+def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float
+                 ) -> np.ndarray:
+    """Densify one stroke and snap each position to the nearest ink pixel."""
+    dense = _densify(stroke, step=2.0)
     snapped = []
     for g in dense:
         near = tree.query_ball_point(g, radius)
@@ -103,24 +92,107 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
             continue
         cand = ink_pts[near]
         snapped.append(cand[np.argmin(np.hypot(cand[:, 0] - g[0], cand[:, 1] - g[1]))])
-    if len(snapped) < 10:
-        return np.empty((0, 2))
-    ordered = dedupe(np.asarray(snapped))
+    return np.asarray(snapped) if snapped else np.empty((0, 2))
+
+
+def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
+                       value_thresh: float = 0.6, resample_n: int = 600,
+                       strokes: list | None = None, return_gaps: bool = False):
+    """Extract the curve the guide points at, as an (x, y) pixel polyline.
+
+    ``guide_xy`` is a rough (M, 2) polyline in image-pixel coordinates (the human
+    scribble); pass ``strokes`` (a list of separate point-lists) instead when the
+    guide was drawn as several mouse-drags — each is snapped to ink
+    independently, so a pen-lift between drags is never mistaken for curve ink.
+    If only ``guide_xy`` is given, likely stroke boundaries are recovered from
+    anomalous point-to-point jumps (:func:`split_strokes`).
+
+    Each stroke is densified and, at every position along it, snapped to the
+    nearest curve-ink pixel within ``radius`` (~2% of the image diagonal by
+    default — enough to cover a hand-drawn wobble). The per-stroke snapped
+    pieces are then stitched into one ordered curve the same way the rest of
+    the pipeline stitches fragmented sub-paths (nearest-endpoint), so strokes
+    drawn in any order or direction still assemble correctly. Returns an empty
+    array if no ink is found near the guide.
+
+    If the strokes together don't cover the whole curve, the join between two
+    pieces is necessarily a straight line (there is no ink to snap to in an
+    untraced span) — this is honest, not wrong, but worth surfacing. With
+    ``return_gaps=True`` the return becomes ``(polyline, gaps)`` where ``gaps``
+    is a list of ``((x0,y0),(x1,y1))`` straight-line spans the caller can mark
+    distinctly (dashed, greyed out) rather than presenting as traced ink.
+    """
+    if cv2 is None:
+        raise RuntimeError("guided extraction needs OpenCV (opencv-python-headless)")
+    from scipy.spatial import cKDTree
+    from .postprocess import dedupe, resample_arclength, order_curve
+
+    def _ret(poly, gaps):
+        return (poly, gaps) if return_gaps else poly
+
+    if strokes is not None:
+        stroke_list = [np.asarray(s, float) for s in strokes if len(s) >= 2]
+    else:
+        stroke_list = split_strokes(guide_xy)
+    if not stroke_list:
+        return _ret(np.empty((0, 2)), [])
+
+    h, w = rgb.shape[:2]
+    if radius is None:
+        radius = max(6, int(0.02 * np.hypot(h, w)))
+
+    ink = _ink_mask(rgb, value_thresh=value_thresh)
+    corridor = np.zeros(rgb.shape[:2], bool)
+    for s in stroke_list:
+        corridor |= _corridor_mask(rgb.shape, s, radius)
+    ys, xs = np.where(ink & corridor)
+    if len(xs) < 10:
+        return _ret(np.empty((0, 2)), [])
+    ink_pts = np.column_stack([xs, ys]).astype(float)
+    tree = cKDTree(ink_pts)
+
+    pieces = [p for p in (_snap_stroke(s, tree, ink_pts, radius) for s in stroke_list)
+             if len(p) >= 3]
+    if not pieces:
+        return _ret(np.empty((0, 2)), [])
+    ordered = order_curve(pieces) if len(pieces) > 1 else pieces[0]
+    ordered = dedupe(ordered)
     if len(ordered) < 10:
-        return np.empty((0, 2))
-    return resample_arclength(ordered, n=resample_n)
+        return _ret(np.empty((0, 2)), [])
+
+    # A real snapped run advances in ~_densify-step (2px) hops; a join between
+    # two unconnected pieces (or a stretch with no ink at all) is a far bigger
+    # jump — flag those as untraced gaps rather than silently presenting them
+    # as if they were guided.
+    gaps = []
+    if len(ordered) > 1 and return_gaps:
+        step = np.hypot(*(np.diff(ordered, axis=0).T))
+        thresh = max(3.0 * radius, 4.0 * (np.median(step) or 1.0))
+        for i in np.where(step > thresh)[0]:
+            gaps.append((tuple(ordered[i]), tuple(ordered[i + 1])))
+
+    return _ret(resample_arclength(ordered, n=resample_n), gaps)
 
 
-def extract_guides(rgb: np.ndarray, guides: list[dict], **kw) -> list[dict]:
+def extract_guides(rgb: np.ndarray, guides: list[dict], *, return_gaps: bool = False,
+                   **kw) -> list[dict]:
     """Run :func:`extract_near_guide` for each named guide.
 
-    ``guides`` is ``[{"name": str, "points": [[x, y], ...]}, ...]`` (as exported
-    by the trace-assist tool). Returns ``[{"name", "polyline_px"}, ...]``,
-    skipping any guide that yields no ink.
+    ``guides`` is ``[{"name": str, "points": [...]}, ...]`` or
+    ``[{"name": str, "strokes": [[...], [...]]}, ...]`` (as exported by the
+    trace-assist tool). Returns ``[{"name", "polyline_px"[, "gaps"]}, ...]``,
+    skipping any guide that yields no ink. With ``return_gaps=True`` each result
+    also carries the untraced-span list from :func:`extract_near_guide`.
     """
     out = []
     for g in guides:
-        poly = extract_near_guide(rgb, g["points"], **kw)
+        src = {"strokes": g["strokes"]} if g.get("strokes") else {}
+        guide_arg = None if src else g["points"]
+        res = extract_near_guide(rgb, guide_arg, return_gaps=return_gaps, **src, **kw)
+        poly, gaps = res if return_gaps else (res, None)
         if len(poly):
-            out.append({"name": g.get("name", ""), "polyline_px": poly})
+            item = {"name": g.get("name", ""), "polyline_px": poly}
+            if return_gaps:
+                item["gaps"] = gaps
+            out.append(item)
     return out

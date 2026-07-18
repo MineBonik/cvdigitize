@@ -65,7 +65,7 @@ def _cmd_run(args):
     if not guides:
         sys.exit("no guides in the JSON")
 
-    results = extract_guides(rgb, guides, radius=args.radius)
+    results = extract_guides(rgb, guides, radius=args.radius, return_gaps=True)
     os.makedirs(args.out, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -79,9 +79,18 @@ def _cmd_run(args):
             w.writerow(["x_px", "y_px"])
             w.writerows(np.round(poly, 2))
         ax.plot(poly[:, 0], poly[:, 1], lw=1.2, label=name)
-        print(f"  {name}: {len(poly)} points -> {safe}.csv")
+        gaps = res.get("gaps") or []
+        for k, (p0, p1) in enumerate(gaps):
+            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], "--", color="0.5", lw=1.5,
+                    label="untraced gap" if k == 0 else None)
+        n_gap = len(gaps)
+        gap_note = f", {n_gap} untraced gap(s) — see dashed grey lines" if n_gap else ""
+        print(f"  {name}: {len(poly)} points -> {safe}.csv{gap_note}")
+        if n_gap:
+            print(f"    tip: your strokes don't cover the whole curve there; "
+                  f"add more scribbles along the dashed spans and re-run for full accuracy")
     ax.legend(fontsize=8)
-    ax.set_title("guided extraction (traced on your rough guides)")
+    ax.set_title("guided extraction (solid = traced on your guide, dashed grey = untraced gap)")
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(os.path.join(args.out, "overlay.png"), dpi=110)
