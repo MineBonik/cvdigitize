@@ -120,37 +120,40 @@ bounds) before matching, so a reference whose real figure extracted badly
 reports "no acceptable curve" rather than flattering itself against a logo /
 watermark / rule / text-blob — the aggregate below is the *honest* one.
 
-Aggregate over all 48 curves: **mean normalised Chamfer 0.029 · 56 %
-good-or-better (<0.03) · 31 % excellent (<0.01)**, every reference matched.
+Aggregate over all 48 curves: **mean normalised Chamfer 0.026 · 58 %
+good-or-better (<0.03) · 33 % excellent (<0.01)**, every reference matched.
 
 | Paper (echemdb key) | figure kind | mean Chamfer | best curve |
 |---|---|---|---|
 | briega-martos 2021 (15 curves) | vector, multi-panel | **0.010** | 0.0025 excellent |
+| clavilier 1980 (preparation) | scanned, figure-in-text | **0.009** | excellent |
 | abe 2019 (3×3 panel grid) | raster, colour | **0.015** | 0.0085 excellent |
 | garcia-araez 2011 | raster, colour | **0.022** | 0.0030 excellent |
+| gomez-marin 2012 | raster, colour | **0.033** | 0.0124 good |
 | sandbeck 2019 | raster, solid+dashed | **0.035** | 0.0159 good |
-| gomez-marin 2012 | raster, colour | **0.035** | 0.0124 good |
 | markovic 1996 | scanned, scale-bar cal. | **0.043** | — |
 | schnaidt 2017 | raster | **0.043** | — |
 | briega-martos 2020 (7 curves) | raster, colour | 0.045 | — |
-| clavilier 1980 (preparation) | scanned, figure-in-text | 0.081 | — |
-| clavilier 1980 (role) | scanned, classic axes | 0.089 | — |
+| clavilier 1980 (role) | scanned, classic axes | 0.061 | — |
 
 Reads: cleanly-drawn vector figures are near-perfect; colour-coded raster
 figures extract well. The big lever is **junction-aware strand decomposition**
 ([`cvdigitize/strands.py`](cvdigitize/strands.py)): a skeleton of overlapping
 strokes is a *graph*, and the naive tracer dies at the first junction where a
-solid curve is touched by its dashed sibling or crossed by another curve. We
-collapse the skeleton to nodes+edges and pair branches by straight-through
-tangent continuity, so each stroke is followed intact across crossings (sharp
-CV peaks, which are not junctions, are preserved). This is what makes
-sandbeck's solid+dashed panels extractable at all (0.071 → 0.035, they had been
-matching junk) and lifts markovic/abe/gomez. Scanned figures buried in a
-full-page text image are first **located** as a large sparse ink component and
-traced from that crop (clavilier-preparation 0.23 → 0.08). The remaining tail
-is low-contrast 1980 scans where stitch shortcuts across erased axis crossings
-persist. (Measured and rejected: tangent-continuity *stitching* — net-neutral;
-higher render zoom — net-negative.)
+solid curve is touched by its dashed sibling, crossed by another curve, or
+crosses a plot axis. We collapse the skeleton to nodes+edges and pair branches
+by straight-through tangent continuity, so each stroke is followed intact
+across crossings (sharp CV peaks, which are not junctions, are preserved) —
+axis-shaped strands are then classified and dropped, rather than erasing axis
+pixels first and re-stitching the fragments (which shortcuts across the gap).
+Applied everywhere in the raster pipeline — colour/dark masks, full-page-scan
+figures, and bare-axes classic figures alike — this is what makes sandbeck's
+solid+dashed panels extractable at all (0.071 → 0.035, they had been matching
+junk) and takes clavilier-preparation, a curve that starts the session buried
+in a full page of body text, from **0.23 → 0.009**, now the single
+best-scoring paper in the benchmark. (Measured and rejected as non-improvements:
+tangent-continuity at the *stitching* level instead of the junction level —
+net-neutral; higher render zoom — net-negative.)
 
 **Real paper — `rizo_2025_analysis_351` (ACS Electrochem 2025), vector figure.**
 All 7 panel-(a) curves auto-extracted from the raw PDF match Vladislav's
