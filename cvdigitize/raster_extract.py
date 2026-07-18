@@ -622,10 +622,79 @@ def _mask_to_curve(mask: np.ndarray, *, max_spur_len: int,
     return poly
 
 
+# Junction-aware strand decomposition (fixes solid/dashed overlays and curve x
+# curve / curve x axis crossings, where the naive single-walk tracer dies).
+USE_STRANDS = True
+
+
+def _mask_to_curves(mask: np.ndarray, *, max_stroke_width: float = 9.0,
+                    min_x_span_frac: float = 0.4, drop_axes: bool = False
+                    ) -> list[np.ndarray]:
+    """Like :func:`_mask_to_curve` but junction-aware and may return SEVERAL
+    curves (e.g. a solid curve and its dashed sibling).
+
+    Same component-keeping and thinness gate, then the skeleton is split into
+    smooth strands that pass straight through crossings (:mod:`strands`), and
+    the strands are assembled into curves. Each returned curve must still sweep
+    a decent fraction of the width (rejects gradient stripes)."""
+    from .strands import skeleton_to_strands, strands_to_curves
+
+    m = mask.astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if n <= 1:
+        return []
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    biggest = int(areas.max())
+    if biggest < 50:
+        return []
+    keep = [i + 1 for i, a in enumerate(areas) if a >= max(40, 0.05 * biggest)]
+    kept_mask = np.isin(labels, keep)
+    area = int(kept_mask.sum())
+    skel = skeletonize_curve(kept_mask)
+    skel_len = int(skel.sum())
+    if skel_len < 30 or area / max(skel_len, 1) > max_stroke_width:
+        return []
+
+    strands = skeleton_to_strands(skel)
+    curves = strands_to_curves(strands, drop_axes=drop_axes)
+    out = []
+    for i, poly in enumerate(curves):
+        if len(poly) >= 30 and np.ptp(poly[:, 0]) >= min_x_span_frac * mask.shape[1]:
+            out.append((poly, "solid" if i == 0 else "dashed"))
+    return out
+
+
+def _curves_from_mask(mask: np.ndarray, *, max_spur_len: int, drop_axes: bool = False,
+                      include_legacy: bool = False) -> list[tuple[np.ndarray, str]]:
+    """Roled curves for one colour/dark mask: ``[(polyline, role), ...]``.
+
+    Junction-aware strand curves ("solid"/"dashed") recover the solid-through-
+    dashed and curve-through-crossing cases the single walk drops. With
+    ``include_legacy`` the old single-walk curve is also returned, tagged
+    "alt" — a second candidate the benchmark's best-match can prefer on a clean
+    lone curve whose self-crossings the strand pairing traces slightly worse.
+    The CLI leaves it off, so its output stays one curve per physical stroke."""
+    out: list[tuple[np.ndarray, str]] = []
+    if USE_STRANDS:
+        out = _mask_to_curves(mask, drop_axes=drop_axes)
+    if not out:
+        poly = _mask_to_curve(mask, max_spur_len=max_spur_len)
+        return [(poly, "solid")] if poly is not None else []
+    if include_legacy:
+        poly = _mask_to_curve(mask, max_spur_len=max_spur_len)
+        if poly is not None:
+            out.append((poly, "alt"))
+    return out
+
+
+def _role_suffix(role: str) -> str:
+    return {"solid": "", "dashed": "_dash", "alt": "_alt"}.get(role, "")
+
+
 def split_color_curves(interior: np.ndarray, *, sat_thresh: float = 0.35,
                        min_pixels: int = 200, hue_bins: int = 36,
-                       value_thresh: float = 0.55,
-                       max_spur_len: int = 15) -> list[dict]:
+                       value_thresh: float = 0.55, max_spur_len: int = 15,
+                       include_legacy: bool = False) -> list[dict]:
     """Separate the curves inside a plot interior by colour, plus the dark one.
 
     Clusters the hues of saturated pixels (histogram peaks), builds one mask
@@ -655,14 +724,17 @@ def split_color_curves(interior: np.ndarray, *, sat_thresh: float = 0.35,
             center = (edges[b] + edges[b + 1]) / 2
             dist = np.abs(((hue - center + 180.0) % 360.0) - 180.0)
             mask = colorful & (dist <= binw)
-            poly = _mask_to_curve(mask, max_spur_len=max_spur_len)
-            if poly is None:
+            polys = _curves_from_mask(mask, max_spur_len=max_spur_len,
+                                      include_legacy=include_legacy)
+            if not polys:
                 continue
             claimed |= mask
             mean_rgb = tuple(round(float(v) / 255.0, 3)
                              for v in interior[mask].mean(axis=0))
-            curves.append({"name": _hue_name(center), "rgb": mean_rgb,
-                           "polyline_px": poly})
+            base = _hue_name(center)
+            for poly, role in polys:
+                curves.append({"name": base + _role_suffix(role),
+                               "rgb": mean_rgb, "polyline_px": poly})
 
     # The dark (black/grey) curve. Exclude only pixels already claimed by an
     # ACCEPTED colour curve — not all saturated pixels: a black line running
@@ -671,9 +743,10 @@ def split_color_curves(interior: np.ndarray, *, sat_thresh: float = 0.35,
     # colour) is what defines it. This keeps single-dark-curve figures with
     # decorative fills working exactly as before.
     dark = mask_dark_curve(interior, value_thresh=value_thresh) & ~claimed
-    poly = _mask_to_curve(dark, max_spur_len=max_spur_len)
-    if poly is not None:
-        curves.append({"name": "dark", "rgb": (0.1, 0.1, 0.1), "polyline_px": poly})
+    for poly, role in _curves_from_mask(dark, max_spur_len=max_spur_len,
+                                        include_legacy=include_legacy):
+        curves.append({"name": "dark" + _role_suffix(role),
+                       "rgb": (0.1, 0.1, 0.1), "polyline_px": poly})
 
     # de-duplicate names (two peaks can share a base name: red vs red2)
     seen: dict[str, int] = {}
@@ -858,7 +931,7 @@ def extract_scan_curves(rgb: np.ndarray, *, dark_thresh: int = 160,
 
 def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
                         value_thresh: float, frame_inset_px: int,
-                        max_spur_len: int) -> dict:
+                        max_spur_len: int, include_legacy: bool = False) -> dict:
     """Curve isolation for one already-located frame, in ``img``'s own pixel space."""
     x0, y0, x1, y1 = frame
     inset = frame_inset_px
@@ -873,7 +946,8 @@ def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
     offset = np.array([x0 + inset, y0 + inset], dtype=float)
     curves = []
     for cdict in split_color_curves(interior, value_thresh=value_thresh,
-                                    max_spur_len=max_spur_len):
+                                    max_spur_len=max_spur_len,
+                                    include_legacy=include_legacy):
         curves.append({**cdict, "polyline_px": cdict["polyline_px"] + offset})
 
     return {"polyline_px": poly_px, "frame_px": frame, "mask": comp,
@@ -925,6 +999,7 @@ def extract_all_panel_curves(
     value_thresh: float = 0.55,
     frame_inset_px: int = 4,
     max_spur_len: int = 15,
+    include_legacy: bool = False,
 ) -> list[dict]:
     """Full raster pipeline for a **composite, multi-panel** figure region.
 
@@ -933,6 +1008,9 @@ def extract_all_panel_curves(
     Returns one result dict per panel (same keys as ``extract_raster_curve``,
     plus ``ticks``), in reading order (top-to-bottom, left-to-right) — index
     them the same way the vector branch indexes panel letters.
+
+    ``include_legacy`` adds the pre-strand single-walk trace of each colour as an
+    extra "*_alt" candidate (used by the accuracy benchmark, off for the CLI).
     """
     img = render_region(pdf_path, page_number, region_bbox, zoom=zoom)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -941,7 +1019,8 @@ def extract_all_panel_curves(
     results = []
     for frame in frames:
         result = _extract_from_frame(img, frame, value_thresh=value_thresh,
-                                     frame_inset_px=frame_inset_px, max_spur_len=max_spur_len)
+                                     frame_inset_px=frame_inset_px, max_spur_len=max_spur_len,
+                                     include_legacy=include_legacy)
         poly_pdf = result["polyline_px"] / zoom + np.array([region_bbox[0], region_bbox[1]])
         ticks = detect_axis_ticks(gray, frame)
         results.append({**result, "polyline": poly_pdf, "image": img, "ticks": ticks})
