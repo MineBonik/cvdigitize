@@ -808,25 +808,52 @@ def extract_frameless_curve(rgb: np.ndarray, *, value_thresh: float = 0.55,
     """Extract the dominant dark curve from a panel with no detectable frame.
 
     For classic crossing-axis voltammograms (no bounding box): mask dark
-    pixels, erase the straight axis lines, drop text/tick specks by area, then
-    skeletonise every remaining component and stitch the arcs into one ordered
-    loop with the shared postprocessor. Returns an (x, y) pixel polyline in the
-    input image's coordinates (empty if nothing curve-like remains).
+    pixels, skeletonise, and decompose into smooth strands
+    (:mod:`strands`) — a curve crossing an axis is exactly a junction, and the
+    strand tracer follows straight through it rather than getting cut there.
+    Axis-shaped strands (long, straight, horizontal/vertical) are dropped and
+    the rest stitched into one curve. This avoids the failure mode of the
+    older erase-the-axis-pixels approach: erasing cuts the curve at every
+    crossing, and the plain nearest-endpoint restitch then shortcuts across the
+    gap — visible as diagonal chords through the plot in low-contrast scans.
+
+    Dense components (body text on a full-page scan, even where touching
+    glyphs merge into big blobs) are dropped before strand decomposition by the
+    same sparse-and-long test :func:`locate_plot_regions` uses — a thin curve
+    stroke fills a low fraction of its own bounding box no matter how big that
+    box is, while a paragraph of touching text is comparatively dense. This
+    matters for correctness (drop text, keep the curve) but also for
+    performance: the final stitch is O(strand count²), so even one big blob of
+    merged text glyphs — dense, but not necessarily small in raw pixel area —
+    can make this pathologically slow if let through. Returns an (x, y) pixel
+    polyline (empty if nothing remains).
     """
-    from .postprocess import keep_main_components, order_curve, dedupe
+    from .strands import skeleton_to_strands, strands_to_curves
+    from .postprocess import dedupe
 
     mask = mask_dark_curve(rgb, value_thresh=value_thresh)
     h, w = mask.shape
-    mask = _erase_straight_lines(mask)
-    polylines = _components_as_polylines(mask, min_area=max(30, (h * w) // 4000),
-                                         max_spur_len=max_spur_len)
-    if not polylines:
+    page_diag = float(np.hypot(h, w))
+    m = mask.astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if n <= 1:
         return np.empty((0, 2))
-    kept = keep_main_components(polylines)
-    if not kept:
+    keep = []
+    for i in range(1, n):
+        x, y, ww, hh, area = stats[i]
+        diag = float(np.hypot(ww, hh))
+        fill = area / (ww * hh + 1)
+        if diag >= 0.12 * page_diag and fill < 0.30:
+            keep.append(i)
+    if not keep:
         return np.empty((0, 2))
-    loop = dedupe(order_curve(kept))
-    return loop
+    big_mask = np.isin(labels, keep)
+
+    skel = skeletonize_curve(big_mask)
+    curves = strands_to_curves(skeleton_to_strands(skel), drop_axes=True)
+    if not curves:
+        return np.empty((0, 2))
+    return dedupe(curves[0])
 
 
 def _merge_boxes(boxes: list[tuple[int, int, int, int]], *, gap: int = 0
@@ -898,9 +925,12 @@ def extract_scan_curves(rgb: np.ndarray, *, dark_thresh: int = 160,
     :func:`locate_plot_regions`) and traces *only that component's pixels* — so
     body text and figure captions can never be stitched into the curve, which is
     the failure mode of extracting from a padded bounding box. Within a
-    component the straight axis lines are erased and the surviving arcs stitched
-    into one ordered loop. Returns an (x, y) polyline per figure found."""
-    from .postprocess import keep_main_components, order_curve, dedupe
+    component the ink is decomposed into strands that pass straight through
+    axis crossings (:mod:`strands`) instead of being cut and re-stitched there,
+    and axis-shaped strands are dropped. Returns an (x, y) polyline per curve
+    found (a component can yield more than one, e.g. a solid + dashed pair)."""
+    from .strands import skeleton_to_strands, strands_to_curves
+    from .postprocess import dedupe
 
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
@@ -917,15 +947,10 @@ def extract_scan_curves(rgb: np.ndarray, *, dark_thresh: int = 160,
                 and ww < 0.95 * w and hh < 0.95 * h):
             continue
         comp = labels == i                       # this figure's ink only
-        comp = _erase_straight_lines(comp)       # drop the bare axis lines
-        polylines = _components_as_polylines(
-            comp, min_area=max(30, (ww * hh) // 4000), max_spur_len=max_spur_len)
-        kept = keep_main_components(polylines)
-        if not kept:
-            continue
-        loop = dedupe(order_curve(kept))
-        if len(loop) >= 20:
-            curves.append(loop)
+        skel = skeletonize_curve(comp)
+        for poly in strands_to_curves(skeleton_to_strands(skel), drop_axes=True):
+            if len(poly) >= 20:
+                curves.append(dedupe(poly))
     return curves
 
 
