@@ -167,11 +167,13 @@ def _cmd_run(args):
     os.makedirs(args.out, exist_ok=True)
     calibrated = bool(calib)
 
+    qc_curves = []
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(rgb)
     for res in results:
         poly = res["polyline_px"]
         name = res["name"] or "curve"
+        qc_curves.append({"name": name, "xy": poly, "rgb": None})
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name) or "curve"
         real, header, ok = (_apply_calibration(poly, calib) if calibrated
                             else (None, None, False))
@@ -199,10 +201,19 @@ def _cmd_run(args):
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(os.path.join(args.out, "overlay.png"), dpi=110)
+    plt.close(fig)
     units = "real units (E, j)" if calibrated else "pixel coords (no calibration in guides.json)"
     print(f"wrote {len(results)} curve(s) in {units} + overlay.png to {args.out}/")
     if not results:
         print("  (no ink found in any corridor — widen with --radius or redraw guides)")
+        return
+
+    from cvdigitize.qc import write_qc
+    qc = write_qc(args.out, rgb, qc_curves,
+                  panel_stem=os.path.splitext(os.path.basename(args.panel))[0],
+                  title=os.path.splitext(os.path.basename(args.panel))[0])
+    print(f"  QC: open {os.path.basename(qc['check_html'])} to fade the trace over "
+          f"the figure by eye (+ curve_overlay.png transparent PNG)")
 
 
 def main(argv=None):

@@ -210,6 +210,15 @@ $("dirFile").addEventListener("change", e => {
     .forEach(f => addPanel(f.name, URL.createObjectURL(f)));
 });
 
+// Handoff from an extraction's check.html: ?panel=<url>&name=<label> preloads
+// that exact panel image so a bad auto-trace can be re-drawn immediately. The
+// image is only drawn to canvas (never read back), so a cross-file URL is fine.
+(function preloadFromQuery(){
+  const q = new URLSearchParams(location.search);
+  const panel = q.get("panel");
+  if(panel) addPanel(q.get("name") || panel.split("/").pop(), panel);
+})();
+
 function renderGallery(){
   const g = $("gallery"); g.innerHTML = "";
   panels.forEach((p,i) => {

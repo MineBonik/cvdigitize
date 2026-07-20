@@ -293,7 +293,7 @@ wired into the main pipeline:
 
 # 3) turn the rough guides into pixel-accurate curves
 .venv\Scripts\python.exe scripts\trace_guided.py run panel.png guides.json -o out\
-#    -> one <curve>.csv per guide + overlay.png
+#    -> one <curve>.csv per guide + overlay.png + check.html (fade-by-eye QC)
 ```
 
 The scribble only says *which* ink is which curve and the sweep direction; the
@@ -306,6 +306,25 @@ one it crosses.
 `<curve>.csv` (+ `.json`/`.yaml` when calibrated), `overlay.png`, `curves.png`,
 a top-level `report.json`, and an `index.html` you can open to see everything
 at a glance.
+
+### Check every trace by eye — and fix a bad one in one click
+
+Every extracted panel (automatic *and* guided) also gets a **`check.html`** and a
+transparent **`curve_overlay.png`**. Open `check.html`: the original figure is
+shown with the extracted curve laid on top in a vivid contrasting colour, and a
+slider **fades the trace in and out over the real ink** — the honest way to judge
+a fit is to watch whether the line sits exactly on the ink or drifts off it (a
+baked overlay you can't remove hides near-misses). A second slider fades the
+figure so you can inspect the bare trace. `curve_overlay.png` is the same trace on
+a transparent background at the panel's exact pixel size, to drop over the figure
+in any image editor or slide.
+
+If a curve looks wrong, click **“Open in trace_assist ▶”** in `check.html`: it
+opens `tools/trace_assist.html` with *that exact panel already loaded*, so you
+scribble a rough guide, export `guides.json`, and re-run `trace_guided.py run` to
+replace the bad auto-trace with a pixel-accurate hand-guided one (§ above). Raster
+figures are where this matters; vector figures almost always pass the eyeball
+check untouched.
 
 ### Calibration JSON (vector figures)
 

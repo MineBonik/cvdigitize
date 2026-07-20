@@ -436,6 +436,12 @@ def _extract_raster(args, pdf, page, stem, out_dir):
     ax.set_title(f"{stem} p{page} panel {plabel} (raster)")
     fig.tight_layout(); fig.savefig(os.path.join(pdir, "overlay.png"), dpi=100); plt.close(fig)
 
+    from .qc import write_qc
+    write_qc(pdir, r["image"],
+             [{"name": c["name"], "xy": c["polyline_px"], "rgb": c["rgb"]}
+              for c, *_ in processed],
+             panel_stem="panel", title=f"{stem} p{page} panel {plabel}")
+
     fig, ax = plt.subplots(figsize=(7, 5))
     for c, data, xlab, ylab, xunit, yunit in processed:
         ax.plot(data[:, 0], data[:, 1], color=_plot_color(c["rgb"]), lw=1.0,
@@ -647,6 +653,12 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         ax.set_title(f"{stem} p{page}" + (f" panel {plabel}" if plabel else ""))
         fig.tight_layout(); fig.savefig(os.path.join(pdir, "overlay.png"), dpi=100)
         plt.close(fig)
+
+        from .qc import write_qc
+        qc_curves = [{"name": pc["group"].name, "xy": pl * 3, "rgb": pc["group"].rgb}
+                     for pc in processed for pl in pc["group"].polylines]
+        write_qc(pdir, img, qc_curves, panel_stem="panel",
+                 title=f"{stem} p{page}" + (f" panel {plabel}" if plabel else ""))
 
         # clean plot of the digitized output itself (the deliverable curves)
         fig, ax = plt.subplots(figsize=(7, 5))
