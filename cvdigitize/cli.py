@@ -386,7 +386,6 @@ def _extract_raster(args, pdf, page, stem, out_dir):
         # four outer tick labels automatically (zero-typing calibration).
         from . import ocr
         if ocr.available():
-            from .raster_extract import crop_tick_labels
             crops = crop_tick_labels(r["image"], r["frame_px"], r["ticks"])
             xp, yp = ocr.read_axis_values(crops)
             if xp and yp:
