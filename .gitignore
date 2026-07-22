@@ -32,3 +32,6 @@ data/literature_Vladislav.zip
 
 # Claude Code local dev config (launch.json etc.)
 .claude/
+
+# Experimental ML tracer checkpoint (regenerate: scripts/experimental/ml_tracer.py train)
+scripts/experimental/*.pt
