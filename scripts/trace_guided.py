@@ -212,8 +212,11 @@ def _cmd_run(args):
     qc = write_qc(args.out, rgb, qc_curves,
                   panel_stem=os.path.splitext(os.path.basename(args.panel))[0],
                   title=os.path.splitext(os.path.basename(args.panel))[0])
+    fids = qc.get("fidelity", [])
+    worst = min((f["score"] for f in fids if f["score"] is not None), default=None)
+    tag = f" — worst ink-fidelity {worst:.0f}/100" if worst is not None else ""
     print(f"  QC: open {os.path.basename(qc['check_html'])} to fade the trace over "
-          f"the figure by eye (+ curve_overlay.png transparent PNG)")
+          f"the figure by eye{tag} (+ curve_overlay.png transparent PNG)")
 
 
 def main(argv=None):

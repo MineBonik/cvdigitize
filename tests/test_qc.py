@@ -44,3 +44,15 @@ def test_check_html_links_to_trace_assist_with_this_panel(tmp_path):
     assert "trace_assist.html?panel=" in html
     assert "panel.png" in html                 # the handoff targets this panel
     assert 'id="op"' in html                    # the fade-by-eye slider is present
+
+
+def test_write_qc_scores_fidelity_and_flags_a_chord(tmp_path):
+    # white panel with a black curve on the left; the trace chords across to the right
+    img = np.full((200, 400, 3), 255, np.uint8)
+    img[98:103, 20:180] = 0                       # real ink on the left
+    trace = np.column_stack([np.arange(20, 380), np.full(360, 100, float)])
+    out = write_qc(str(tmp_path), img, [{"name": "c", "xy": trace, "rgb": (0, 0, 0)}])
+    fid = out["fidelity"][0]
+    assert fid["score"] < 70 and fid["n_defects"] >= 1   # chord detected + scored
+    html = open(out["check_html"], encoding="utf-8").read()
+    assert "#e74c3c" in html                       # a red chord marker is drawn
