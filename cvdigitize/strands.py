@@ -288,14 +288,18 @@ def _is_axis_strand(xy: np.ndarray, *, straight_tol: float = 0.06,
 
 
 def strands_to_curves(strands: list[np.ndarray], *, drop_axes: bool = False,
-                      long_frac: float = 0.30, min_dashes: int = 4
-                      ) -> list[np.ndarray]:
+                      long_frac: float = 0.30, min_dashes: int = 4,
+                      ink_mask=None) -> list[np.ndarray]:
     """Assemble strands into curves: a solid curve (long strands stitched) and,
     if a regular set of short strands is present, a separate dashed curve.
 
     Returns ordered (x, y) polylines, solid first. ``drop_axes`` removes
     straight axis-aligned strands (use on the dark/scan mask, not colour masks
-    where the axes are a different colour)."""
+    where the axes are a different colour). ``ink_mask`` (the ink these strands
+    were traced from) makes the stitch ink-aware — decisive for the dashed
+    sibling, whose short strands are otherwise joined by pure nearest-endpoint
+    and can chord across the plot; with the mask, the stitch pays for crossing
+    empty space, so dashes connect along the real curve instead."""
     from .postprocess import order_curve
 
     strands = [s for s in strands if len(s) >= 3]
@@ -310,7 +314,7 @@ def strands_to_curves(strands: list[np.ndarray], *, drop_axes: bool = False,
 
     curves: list[np.ndarray] = []
     if long:
-        curves.append(order_curve(long))
+        curves.append(order_curve(long, ink_mask=ink_mask))
     # A dashed sibling only when there are several short strands that, together,
     # sweep a real fraction of the width (a dashed CV spans the plot). Localised
     # short bits — anti-aliasing spurs on a clean curve — do not, so a lone
@@ -319,6 +323,11 @@ def strands_to_curves(strands: list[np.ndarray], *, drop_axes: bool = False,
         allx = np.concatenate([s[:, 0] for s in short])
         total_w = max(np.ptp(np.concatenate([s[:, 0] for s in strands])), 1.0)
         if np.ptp(allx) >= 0.4 * total_w:
+            # The dashed sibling of a *loop* interleaves dashes between the two
+            # branches, so no single stitch order is right — ink-aware ordering
+            # doesn't help here (measured: net-negative), and the whole dashed
+            # trace is flagged low-fidelity for guided re-tracing anyway. Keep the
+            # plain nearest-endpoint stitch; ink-awareness is for the solid.
             curves.append(order_curve(short))
     return curves
 
