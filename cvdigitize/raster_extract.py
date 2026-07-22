@@ -656,7 +656,7 @@ def _mask_to_curves(mask: np.ndarray, *, max_stroke_width: float = 9.0,
         return []
 
     strands = skeleton_to_strands(skel)
-    curves = strands_to_curves(strands, drop_axes=drop_axes)
+    curves = strands_to_curves(strands, drop_axes=drop_axes, ink_mask=kept_mask)
     out = []
     for i, poly in enumerate(curves):
         if len(poly) >= 30 and np.ptp(poly[:, 0]) >= min_x_span_frac * mask.shape[1]:
@@ -850,7 +850,8 @@ def extract_frameless_curve(rgb: np.ndarray, *, value_thresh: float = 0.55,
     big_mask = np.isin(labels, keep)
 
     skel = skeletonize_curve(big_mask)
-    curves = strands_to_curves(skeleton_to_strands(skel), drop_axes=True)
+    curves = strands_to_curves(skeleton_to_strands(skel), drop_axes=True,
+                               ink_mask=big_mask)
     if not curves:
         return np.empty((0, 2))
     return dedupe(curves[0])
@@ -948,7 +949,8 @@ def extract_scan_curves(rgb: np.ndarray, *, dark_thresh: int = 160,
             continue
         comp = labels == i                       # this figure's ink only
         skel = skeletonize_curve(comp)
-        for poly in strands_to_curves(skeleton_to_strands(skel), drop_axes=True):
+        for poly in strands_to_curves(skeleton_to_strands(skel), drop_axes=True,
+                                      ink_mask=comp):
             if len(poly) >= 20:
                 curves.append(dedupe(poly))
     return curves
