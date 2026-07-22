@@ -275,6 +275,54 @@ cvdigitize batch "data\corpus"
 (`cvdigitize` above = `cvdigitize.bat` / `.\cvdigitize.ps1`, or
 `.venv\Scripts\python.exe -m cvdigitize` if you'd rather call Python directly.)
 
+### Crop &amp; triage a messy paper first — recommended for real-world batches
+
+A real literature folder is full of figures that **aren't** clean single-plot
+CVs: multi-panel composites (a crystal-structure schematic next to 3 separate
+voltammograms, each with its own axes), SEM images, schemes. Handing these
+straight to frame auto-detection fails in two different ways — measured on a
+real paper: the schematic's ball-and-stick shapes get misread as **176
+spurious plot frames**, or the whole composite collapses into **one panel**
+with one calibration wrongly shared across sub-plots that don't have the same
+axes. Fix: a human crops each real plot by hand first, so detection only ever
+sees one clean figure at a time.
+
+```powershell
+# 1) render whole pages — no panel auto-detection at all
+.venv\Scripts\python.exe scripts\trace_guided.py pages data\papers -o data\out\pages
+
+# 2) open tools\trace_assist.html, load that folder. In Crop mode, drag a box
+#    around ONE real plot (skip the schematic / other panels entirely — crop
+#    them separately). Alt+drag inside it to blank out a legend/text box that
+#    sits on the axes (a real, measured contamination source — see below).
+#    Classify each crop: Normal CV / Strange CV / Not a CV. Export triage.json.
+
+# 3) normal CVs auto-extract; strange ones you already traced are finalized;
+#    ones you only cropped get their panel.png saved for tracing later
+.venv\Scripts\python.exe scripts\trace_guided.py triage triage.json -o data\out\triaged
+#    -> per panel: CSV(s) + check.html (fade-by-eye QC, same as below)
+```
+
+**Calibration is per-curve, not per-paper.** Each curve traced in trace_assist
+carries its own calibration (with a one-click "copy from" when several curves
+in the same plot do share axes) — a curve accidentally traced from a
+different sub-plot than intended never silently inherits the wrong axes;
+old single-calibration `guides.json` files still load and apply to every
+curve unchanged.
+
+**Measured win from masking a legend box** (chen_2024_deconvolution_4958,
+Fig. 3b — a black + red pair with an in-plot legend): automatic extraction
+without cropping scored Chamfer 0.106 (poor) against the echemdb ground truth,
+because the trace absorbed the legend's black text. Cropping to the panel and
+masking the legend rectangle alone brought it to **0.034** — a 3× improvement,
+with zero code changes, just excluding ink that was never part of the curve.
+(The red curve in the same panel needed hand-tracing instead — its hue mask
+only held the sharp peak where red is least blended with the overlapping
+black curve, elsewhere it lost too much of its own ink to color-overlap. Ink
+fidelity actually scored that partial trace 100/100 — perfectly on its own
+ink, just not enough of it — which is exactly why the fade-by-eye check
+matters even when the automatic self-score looks perfect.)
+
 ### Guided digitization — when a figure is too tangled to auto-trace
 
 For the genuinely hard cases (a bundle of 8 near-identical curves, a solid you

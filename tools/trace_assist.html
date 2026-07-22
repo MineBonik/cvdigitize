@@ -67,7 +67,7 @@
 <body>
 <header>
   <h1>cvdigitize · trace assist</h1>
-  <span class="sub">raster figures only — rough scribble in → pixel-accurate curve out (vector figures: use <kbd>python -m cvdigitize</kbd>)</span>
+  <span class="sub">raster figures only — crop each real plot &amp; triage it (CV / strange / not-CV), then trace or auto-extract (vector figures: use <kbd>python -m cvdigitize</kbd>)</span>
 </header>
 
 <div class="wrap">
@@ -89,6 +89,7 @@
     <div class="card">
       <div class="hd">2 · Mode &amp; brush</div>
       <div class="seg" id="modeSeg">
+        <button data-mode="crop">⬛ Crop</button>
         <button data-mode="draw" class="on">✎ Trace</button>
         <button data-mode="calib">⌖ Calibrate</button>
         <button data-mode="pan">✋ Pan</button>
@@ -100,6 +101,24 @@
       </div>
       <div class="hint" style="margin-top:6px">
         Scroll = zoom · drag in <b>Pan</b> (or hold <kbd>Space</kbd>) = move · <kbd>0</kbd> = fit
+      </div>
+    </div>
+
+    <div class="card" id="cropCard">
+      <div class="hd">Crop &amp; triage <span class="muted">(bypass panel auto-detect)</span></div>
+      <div class="hint">
+        In <b>Crop</b> mode, drag a box around ONE real plot (skip schematics /
+        other panels entirely — crop them separately later). Hold <kbd>Alt</kbd>
+        and drag inside it to blank out a legend/text box that sits on the axes.
+      </div>
+      <div id="cropStatus" class="muted" style="margin:8px 0">no crop selected</div>
+      <div class="row">
+        <button id="cropCV" class="primary" disabled title="A normal CV — will be auto-extracted">✓ Normal CV</button>
+        <button id="cropStrange" disabled title="Unusual/tangled — you'll trace it by hand">? Strange CV</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="cropNotCV" disabled title="Not a CV at all — excluded, recorded for the record">✕ Not a CV</button>
+        <button id="cropClear" disabled>Clear</button>
       </div>
     </div>
 
@@ -118,8 +137,15 @@
 
     <div class="card">
       <div class="hd">4 · Calibration <span class="muted">(optional → real units)</span></div>
+      <div class="row" style="margin-bottom:8px">
+        <span class="muted" style="white-space:nowrap">Applies to</span>
+        <select id="calibTarget" style="flex:1"></select>
+        <button id="calibCopy" title="copy calibration from another curve/default">⧉</button>
+      </div>
       <div class="hint" style="margin-bottom:8px">
         In <b>Calibrate</b> mode, click each axis point, then type its value.
+        <b>Panel default</b> is used by every curve that has no calibration of
+        its own — pick a specific curve here only if it needs different axes.
       </div>
       <div class="cal-grid">
         <label>E₁</label><input id="E1v" type="number" step="any" placeholder="V, e.g. 0"><button class="set" data-anchor="E1">set pt</button>
@@ -145,6 +171,14 @@
       <div class="hint" style="margin-top:7px">
         Then:<br><kbd>python scripts/trace_guided.py run panel.png guides.json -o out/</kbd>
       </div>
+      <div class="row" style="margin-top:10px">
+        <button id="exportTriageBtn" disabled style="flex:1">⬇ Download triage.json (all crops)</button>
+      </div>
+      <div class="hint" style="margin-top:7px">
+        Bundles every cropped panel (image + decision + curves + calibration)
+        from this session. Then:<br>
+        <kbd>python scripts/trace_guided.py triage triage.json -o out/</kbd>
+      </div>
     </div>
     <div class="muted" style="font-size:11px">Runs entirely in your browser — nothing is uploaded.</div>
   </aside>
@@ -159,14 +193,30 @@
 <script>
 const PALETTE = ["#2dd4bf","#f97316","#a78bfa","#f43f5e","#22c55e","#38bdf8",
                  "#eab308","#ec4899","#14b8a6","#fb7185"];
-// Each panel keeps its own curves + calibration so you can switch between figures.
-let panels = [];       // {name, image, curves:[{name,color,radius,strokes:[[[x,y]..]..]}], calib:{E1:{px},...}}
+// Each panel keeps its own curves + a default calibration so you can switch
+// between figures. A curve may carry its OWN calib override (see "Applies to"
+// in the Calibration card) for the rare case where curves traced in one
+// session don't all share the same axes; otherwise every curve falls back to
+// the panel default — this is exactly the "one curve = one calibration point,
+// with an option to keep them the same" the crop-first workflow calls for.
+let panels = [];       // {name, image, curves:[{name,color,radius,strokes,calib?}],
+                       //  calib:{E1:{px,value},...,E_unit,E_ref,j_unit}, triageDecision?, sourcePage?}
 let pi = -1;           // active panel index
 let active = -1;       // active curve index (within panel)
-let mode = "draw";     // draw | calib | pan
+let mode = "draw";     // crop | draw | calib | pan
 let brush = 12;
 let view = {z:1, ox:0, oy:0};   // zoom + offset (image px -> screen)
 let drawing = false, panning = false, spaceDown = false;
+let calibTarget = "panel";      // "panel" or a curve index (number)
+
+// ---- crop & triage state ----
+let cropRect = null;       // [x0,y0,x1,y1] in image px, pending (not yet confirmed)
+let excludeRects = [];     // [[x0,y0,x1,y1], ...] masked-out sub-rects within cropRect
+let cropDragging = null;   // "crop" | "exclude" | null
+let cropDragStart = null;  // [x,y] image px
+let rejectedCrops = [];    // [{sourcePage, rect}] — "Not a CV" record, no panel created
+let cropCounter = 0;
+let pendingExcludeRect = null;  // exclude-rect currently being dragged
 
 const stage = document.getElementById("stage");
 const cv = document.getElementById("cv");
@@ -191,12 +241,14 @@ const toImage  = (sx,sy) => [(sx-view.ox)/view.z, (sy-view.oy)/view.z];
 function evPos(e){ const r = cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
 
 // ---- image loading ----
-function addPanel(name, url){
+function addPanel(name, url, extra){
   const im = new Image();
   im.onload = () => {
-    panels.push({name, image:im, curves:[], calib:{}});
-    if(pi<0){ pi = 0; fitView(); }
-    renderGallery(); renderCurves(); redraw(); updateExport();
+    panels.push(Object.assign({name, image:im, curves:[], calib:{}}, extra||{}));
+    // batch loads (folder/multi-file) only jump focus to the first image;
+    // a deliberate single add (crop bake, trace_assist handoff) always jumps.
+    if(pi<0 || extra){ pi = panels.length-1; active=-1; fitView(); }
+    renderGallery(); renderCurves(); redraw(); updateExport(); updateTriageExport();
   };
   im.src = url;
 }
@@ -238,13 +290,14 @@ $("modeSeg").addEventListener("click", e => {
   const b = e.target.closest("button"); if(!b) return;
   mode = b.dataset.mode;
   [...$("modeSeg").children].forEach(x => x.classList.toggle("on", x===b));
-  cv.style.cursor = mode==="pan" ? "grab" : (mode==="calib" ? "cell" : "crosshair");
-  updateModeHelp();
+  cv.style.cursor = mode==="pan" ? "grab" : (mode==="calib" ? "cell" : (mode==="crop" ? "copy" : "crosshair"));
+  updateModeHelp(); redraw();
 });
 $("brush").addEventListener("input", e => { brush = +e.target.value; $("brushVal").textContent = brush+" px"; redraw(); });
 function updateModeHelp(){
   const m = {draw:"Trace: drag roughly along a curve. Brush width = snap corridor.",
              calib:"Calibrate: click an axis point below, then type its value.",
+             crop:"Crop: drag a box around one real plot. Alt+drag inside it to mask out unwanted text.",
              pan:"Pan: drag to move, scroll to zoom."};
   $("modehelp").textContent = m[mode] || "";
 }
@@ -261,8 +314,8 @@ $("curveName").addEventListener("keydown", e => { if(e.key==="Enter") $("addCurv
 
 function renderCurves(){
   const list = $("curveList"); list.innerHTML = "";
-  const p = P(); if(!p) return;
-  p.curves.forEach((c,i) => {
+  const p = P();
+  if(p) p.curves.forEach((c,i) => {
     const li = document.createElement("li");
     if(i===active) li.className = "active";
     const n = c.strokes.reduce((s,st)=>s+st.length,0);
@@ -275,7 +328,72 @@ function renderCurves(){
     li.onclick = () => { active=i; renderCurves(); redraw(); };
     list.appendChild(li);
   });
+  renderCalibTargets();
 }
+
+// ---- calibration target selector ("panel default" or a specific curve) ----
+function getCalibObj(target){
+  const p = P(); if(!p) return {};
+  if(target==="panel" || target==null) return p.calib;
+  const c = p.curves[target]; if(!c) return p.calib;
+  if(!c.calib) c.calib = {};
+  return c.calib;
+}
+function renderCalibTargets(){
+  const sel = $("calibTarget"); const p = P();
+  const prev = calibTarget;
+  sel.innerHTML = "";
+  const optPanel = document.createElement("option"); optPanel.value="panel"; optPanel.textContent="Panel default (all curves)";
+  sel.appendChild(optPanel);
+  (p ? p.curves : []).forEach((c,i) => {
+    const o = document.createElement("option"); o.value=i; o.textContent = "only: "+c.name; sel.appendChild(o);
+  });
+  // keep the previous target selected if it still exists, else fall back to panel default
+  const stillValid = prev==="panel" || (p && p.curves[prev]);
+  calibTarget = stillValid ? prev : "panel";
+  sel.value = calibTarget;
+  loadCalibToUI();
+}
+function loadCalibToUI(){
+  const c = getCalibObj(calibTarget);
+  ["E1","E2","j1","j2"].forEach(k => {
+    const btn = document.querySelector(`.set[data-anchor="${k}"]`);
+    const has = c[k] && c[k].px;
+    btn.classList.toggle("done", !!has); btn.textContent = has ? "✓ pt" : "set pt";
+    $(k+"v").value = has && c[k].value!=null ? c[k].value : "";
+  });
+  $("Eunit").value = c.E_unit || "V"; $("Eref").value = c.E_ref || "RHE"; $("junit").value = c.j_unit || "uA/cm2";
+}
+$("calibTarget").addEventListener("change", e => { calibTarget = e.target.value==="panel" ? "panel" : +e.target.value; loadCalibToUI(); redraw(); });
+$("calibCopy").addEventListener("click", () => {
+  const p = P(); if(!p) return;
+  const others = ["panel"].concat(p.curves.map((c,i)=>i)).filter(t=>t!==calibTarget);
+  if(!others.length){ alert("No other calibration to copy from yet."); return; }
+  const labels = others.map(t => t==="panel" ? "Panel default" : `curve: ${p.curves[t].name}`);
+  const pick = prompt("Copy calibration from which?\n"+labels.map((l,i)=>`${i}: ${l}`).join("\n"), "0");
+  const idx = parseInt(pick,10);
+  if(isNaN(idx) || !others[idx]) return;
+  const src = getCalibObj(others[idx]);
+  const dst = getCalibObj(calibTarget);
+  Object.keys(dst).forEach(k=>delete dst[k]);
+  Object.assign(dst, JSON.parse(JSON.stringify(src)));
+  loadCalibToUI(); redraw(); updateExport();
+});
+["E1v","E2v","j1v","j2v"].forEach(id => {
+  $(id).addEventListener("input", () => {
+    const k = id.slice(0,2); const c = getCalibObj(calibTarget);
+    if(!c[k]) return;                      // point not placed yet — nothing to attach the value to
+    const v = parseFloat($(id).value);
+    c[k].value = isNaN(v) ? null : v;
+    updateExport();
+  });
+});
+["Eunit","Eref","junit"].forEach(id => {
+  $(id).addEventListener("input", () => {
+    const c = getCalibObj(calibTarget);
+    c.E_unit = $("Eunit").value.trim()||"V"; c.E_ref = $("Eref").value.trim(); c.j_unit = $("junit").value.trim();
+  });
+});
 
 // ---- pointer interaction ----
 cv.addEventListener("pointerdown", e => {
@@ -284,6 +402,12 @@ cv.addEventListener("pointerdown", e => {
   const [sx,sy] = evPos(e);
   if(mode==="pan" || spaceDown || e.button===1){ panning=true; cv._last=[sx,sy]; cv.style.cursor="grabbing"; return; }
   if(mode==="calib"){ placeCalib(toImage(sx,sy)); return; }
+  if(mode==="crop"){
+    cropDragging = (e.altKey && cropRect) ? "exclude" : "crop";
+    cropDragStart = toImage(sx,sy);
+    if(cropDragging==="crop"){ cropRect=null; excludeRects=[]; updateCropButtons(); }
+    return;
+  }
   // draw
   if(active<0){ return; }
   p.curves[active].radius = brush;
@@ -293,9 +417,24 @@ cv.addEventListener("pointermove", e => {
   const [sx,sy] = evPos(e);
   if(panning){ view.ox += sx-cv._last[0]; view.oy += sy-cv._last[1]; cv._last=[sx,sy]; redraw(); return; }
   if(drawing){ const st=P().curves[active].strokes; st[st.length-1].push(toImage(sx,sy)); redraw(); }
+  if(cropDragging){
+    const cur = toImage(sx,sy);
+    const rect = [Math.min(cropDragStart[0],cur[0]), Math.min(cropDragStart[1],cur[1]),
+                  Math.max(cropDragStart[0],cur[0]), Math.max(cropDragStart[1],cur[1])];
+    if(cropDragging==="crop") cropRect = rect; else pendingExcludeRect = rect;
+    redraw();
+  }
 });
 cv.addEventListener("pointerup", () => {
-  drawing=false; panning=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"crosshair");
+  drawing=false; panning=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":(mode==="crop"?"copy":"crosshair"));
+  if(cropDragging==="exclude" && pendingExcludeRect){
+    const r = pendingExcludeRect; pendingExcludeRect = null;
+    if(r[2]-r[0] > 4 && r[3]-r[1] > 4) excludeRects.push(r);
+    redraw();
+  }
+  if(cropDragging==="crop" && cropRect && (cropRect[2]-cropRect[0] < 8 || cropRect[3]-cropRect[1] < 8)) cropRect = null;
+  cropDragging = null; cropDragStart = null;
+  updateCropButtons();
   renderCurves(); updateExport();
 });
 cv.addEventListener("wheel", e => {
@@ -327,11 +466,80 @@ document.querySelectorAll(".set").forEach(b => b.addEventListener("click", () =>
 }));
 function placeCalib(imgpt){
   const p = P(); if(!p || !pendingAnchor) return;
-  p.calib[pendingAnchor] = {px:[Math.round(imgpt[0]), Math.round(imgpt[1])]};
+  const c = getCalibObj(calibTarget);
+  const prevVal = c[pendingAnchor] ? c[pendingAnchor].value : null;
+  c[pendingAnchor] = {px:[Math.round(imgpt[0]), Math.round(imgpt[1])], value: prevVal};
+  const inputId = pendingAnchor+"v";
+  if($(inputId).value !== "" && prevVal==null) c[pendingAnchor].value = parseFloat($(inputId).value);
   const btn = document.querySelector(`.set[data-anchor="${pendingAnchor}"]`);
   btn.classList.remove("on"); btn.classList.add("done"); btn.textContent="✓ pt";
   pendingAnchor=null; redraw(); updateExport();
 }
+
+// ---- crop & triage ----
+function updateCropButtons(){
+  const has = !!cropRect;
+  $("cropCV").disabled = !has; $("cropStrange").disabled = !has;
+  $("cropNotCV").disabled = !has; $("cropClear").disabled = !has;
+  $("cropStatus").textContent = has
+    ? `crop ${Math.round(cropRect[2]-cropRect[0])}×${Math.round(cropRect[3]-cropRect[1])}px`
+      + (excludeRects.length ? `, ${excludeRects.length} masked area(s)` : "")
+    : "no crop selected";
+}
+function bakeCrop(){
+  const p = P();
+  const [x0,y0,x1,y1] = cropRect.map(Math.round);
+  const w = x1-x0, h = y1-y0;
+  const off = document.createElement("canvas"); off.width=w; off.height=h;
+  const octx = off.getContext("2d");
+  octx.drawImage(p.image, x0,y0,w,h, 0,0,w,h);
+  excludeRects.forEach(r => {
+    octx.fillStyle = "#fff";
+    octx.fillRect(Math.round(r[0]-x0), Math.round(r[1]-y0), Math.round(r[2]-r[0]), Math.round(r[3]-r[1]));
+  });
+  return off.toDataURL("image/png");
+}
+function confirmCrop(decision){
+  const p = P(); if(!p || !cropRect) return;
+  if(decision==="not_cv"){
+    rejectedCrops.push({sourcePage:p.name, rect:cropRect.map(Math.round)});
+    cropRect=null; excludeRects=[]; updateCropButtons(); redraw(); updateTriageExport();
+    return;
+  }
+  cropCounter++;
+  const dataUrl = bakeCrop();
+  const name = `${p.name.replace(/\.(png|jpe?g)$/i,"")}_crop${cropCounter}`;
+  const rect = cropRect.map(Math.round);
+  cropRect=null; excludeRects=[];
+  addPanel(name, dataUrl, {triageDecision:decision, sourcePage:p.name, sourceRect:rect});
+  updateCropButtons(); updateTriageExport();
+}
+$("cropCV").addEventListener("click", () => confirmCrop("cv"));
+$("cropStrange").addEventListener("click", () => confirmCrop("strange"));
+$("cropNotCV").addEventListener("click", () => confirmCrop("not_cv"));
+$("cropClear").addEventListener("click", () => { cropRect=null; excludeRects=[]; updateCropButtons(); redraw(); });
+
+function updateTriageExport(){
+  const any = panels.some(p => p.triageDecision) || rejectedCrops.length>0;
+  $("exportTriageBtn").disabled = !any;
+}
+$("exportTriageBtn").addEventListener("click", () => {
+  const round = pt => [Math.round(pt[0]), Math.round(pt[1])];
+  const triagePanels = panels.filter(p => p.triageDecision).map(p => ({
+    name: p.name, decision: p.triageDecision, sourcePage: p.sourcePage || null,
+    sourceRect: p.sourceRect || null, image: p.image.src,
+    calibration: (p.calib.E1 && p.calib.E2 && p.calib.j1 && p.calib.j2) ? p.calib : null,
+    guides: p.curves.map(c => ({
+      name: c.name, radius: c.radius,
+      strokes: c.strokes.filter(s=>s.length>1).map(s=>s.map(round)),
+      calibration: (c.calib && c.calib.E1 && c.calib.E2 && c.calib.j1 && c.calib.j2) ? c.calib : undefined,
+    })).filter(g => g.strokes.length>0 || p.triageDecision==="cv"),
+  }));
+  const out = {panels: triagePanels, rejected: rejectedCrops};
+  const blob = new Blob([JSON.stringify(out,null,2)], {type:"application/json"});
+  const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download = "triage.json"; a.click();
+});
 
 // ---- rendering ----
 function redraw(){
@@ -354,32 +562,46 @@ function redraw(){
       st.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
   });
   ctx.globalAlpha = 1;
-  // calibration markers
+  // calibration markers — for whichever target ("panel" or a curve) is selected
   const marks = {E1:"#38bdf8",E2:"#38bdf8",j1:"#f59e0b",j2:"#f59e0b"};
-  Object.entries(p.calib).forEach(([k,v]) => {
+  const calibObj = getCalibObj(calibTarget);
+  Object.entries(calibObj).forEach(([k,v]) => {
     if(!v||!v.px) return; const [x,y]=toScreen(v.px[0],v.px[1]);
     ctx.strokeStyle=marks[k]||"#fff"; ctx.fillStyle=marks[k]||"#fff"; ctx.lineWidth=1.5;
     ctx.beginPath(); ctx.moveTo(x-8,y); ctx.lineTo(x+8,y); ctx.moveTo(x,y-8); ctx.lineTo(x,y+8); ctx.stroke();
     ctx.font="12px sans-serif"; ctx.fillText(k, x+9, y-4);
   });
+  // crop mode overlay: dim outside the pending crop rect, outline it, hatch excludes
+  if(mode==="crop" || cropRect){
+    const w = cv.width, h = cv.height;
+    ctx.save();
+    if(cropRect){
+      const [x0,y0] = toScreen(cropRect[0],cropRect[1]), [x1,y1] = toScreen(cropRect[2],cropRect[3]);
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0,0,w,y0); ctx.fillRect(0,y1,w,h-y1);
+      ctx.fillRect(0,y0,x0,y1-y0); ctx.fillRect(x1,y0,w-x1,y1-y0);
+      ctx.strokeStyle = "#2dd4bf"; ctx.lineWidth = 2; ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+      excludeRects.forEach(r => {
+        const [ex0,ey0] = toScreen(r[0],r[1]), [ex1,ey1] = toScreen(r[2],r[3]);
+        ctx.fillStyle = "rgba(244,63,94,0.35)"; ctx.fillRect(ex0,ey0,ex1-ex0,ey1-ey0);
+        ctx.strokeStyle = "#f43f5e"; ctx.lineWidth = 1.5; ctx.strokeRect(ex0,ey0,ex1-ex0,ey1-ey0);
+      });
+      if(pendingExcludeRect){
+        const [ex0,ey0] = toScreen(pendingExcludeRect[0],pendingExcludeRect[1]),
+              [ex1,ey1] = toScreen(pendingExcludeRect[2],pendingExcludeRect[3]);
+        ctx.fillStyle = "rgba(244,63,94,0.25)"; ctx.fillRect(ex0,ey0,ex1-ex0,ey1-ey0);
+        ctx.strokeStyle = "#f43f5e"; ctx.setLineDash([4,3]); ctx.strokeRect(ex0,ey0,ex1-ex0,ey1-ey0); ctx.setLineDash([]);
+      }
+    }
+    ctx.restore();
+  }
   $("zbadge").textContent = Math.round(view.z*100)+"%";
 }
 function resizeCanvasIfNeeded(){ if(cv.width!==stage.clientWidth||cv.height!==stage.clientHeight) resizeCanvas(); }
 
 // ---- export / import ----
-function collectCalib(){
-  const p = P(); const c = p.calib;
-  const need = ["E1","E2","j1","j2"];
-  if(!need.every(k => c[k] && c[k].px)) return null;
-  const val = id => { const v = parseFloat($(id).value); return isNaN(v)?null:v; };
-  const vals = {E1:val("E1v"),E2:val("E2v"),j1:val("j1v"),j2:val("j2v")};
-  if(Object.values(vals).some(v => v===null)) return null;
-  return {
-    E1:{px:c.E1.px,value:vals.E1}, E2:{px:c.E2.px,value:vals.E2},
-    j1:{px:c.j1.px,value:vals.j1}, j2:{px:c.j2.px,value:vals.j2},
-    E_unit:$("Eunit").value.trim()||"V", E_ref:$("Eref").value.trim(),
-    j_unit:$("junit").value.trim()
-  };
+function validCalib(c){
+  return c && ["E1","E2","j1","j2"].every(k => c[k] && c[k].px && c[k].value!=null) ? c : null;
 }
 function updateExport(){
   const p = P();
@@ -390,11 +612,16 @@ $("exportBtn").addEventListener("click", () => {
   const p = P(); if(!p) return;
   const round = pt => [Math.round(pt[0]), Math.round(pt[1])];
   const guides = p.curves
-    .map(c => ({name:c.name, radius:c.radius,
-                strokes:c.strokes.filter(s=>s.length>1).map(s=>s.map(round))}))
+    .map(c => {
+      const g = {name:c.name, radius:c.radius,
+                strokes:c.strokes.filter(s=>s.length>1).map(s=>s.map(round))};
+      const cc = validCalib(c.calib);           // per-curve override, only if fully set
+      if(cc) g.calibration = cc;
+      return g;
+    })
     .filter(g => g.strokes.length>0);
   const out = {panel:p.name, guides};
-  const cal = collectCalib();
+  const cal = validCalib(p.calib);              // panel default, used by curves with no override
   if(cal) out.calibration = cal;
   const blob = new Blob([JSON.stringify(out,null,2)], {type:"application/json"});
   const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
@@ -408,14 +635,10 @@ $("loadJson").addEventListener("change", e => {
     const p = P(); if(!p){ alert("Load the figure image first, then the guides."); return; }
     p.curves = (d.guides||[]).map((g,i)=>({name:g.name||`curve ${i+1}`, color:PALETTE[i%PALETTE.length],
       radius:g.radius||brush,
-      strokes: g.strokes ? g.strokes.map(s=>s.map(pt=>[pt[0],pt[1]])) : [g.points.map(pt=>[pt[0],pt[1]])]}));
-    if(d.calibration){ const c=d.calibration;
-      ["E1","E2","j1","j2"].forEach(k=>{ if(c[k]&&c[k].px){ p.calib[k]={px:c[k].px};
-        const btn=document.querySelector(`.set[data-anchor="${k}"]`); btn.classList.add("done"); btn.textContent="✓ pt";
-        $(k+"v").value = c[k].value; }});
-      $("Eunit").value=c.E_unit||"V"; $("Eref").value=c.E_ref||""; $("junit").value=c.j_unit||"";
-    }
-    active = p.curves.length-1; renderCurves(); redraw(); updateExport();
+      strokes: g.strokes ? g.strokes.map(s=>s.map(pt=>[pt[0],pt[1]])) : [g.points.map(pt=>[pt[0],pt[1]])],
+      calib: g.calibration || undefined}));      // per-curve override, if this guide had one
+    p.calib = d.calibration || {};               // panel default (old flat-calibration files load straight in)
+    active = p.curves.length-1; calibTarget="panel"; renderCurves(); redraw(); updateExport();
   } catch(err){ alert("Could not read guides.json: "+err.message); } };
   rd.readAsText(f);
 });
