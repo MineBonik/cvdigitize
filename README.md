@@ -326,6 +326,26 @@ replace the bad auto-trace with a pixel-accurate hand-guided one (§ above). Ras
 figures are where this matters; vector figures almost always pass the eyeball
 check untouched.
 
+### Ink-fidelity: the tool grades its own traces (no ground truth needed)
+
+You don't have to eyeball blindly. Every trace is scored by **ink-fidelity** — how
+well it lies on the ink it was traced from ([`cvdigitize/fidelity.py`](cvdigitize/fidelity.py)):
+walk the extracted curve, measure the distance to the nearest ink of its own
+colour, and penalise only the runs that cross **long** stretches of empty space
+(a chord). Short off-ink hops are *not* penalised, so a correctly-traced **dashed**
+curve, which bridges its dash gaps, still scores high. No reference curve is
+needed, so it works on every paper.
+
+The extractor prints a one-line triage (`Ink-fidelity: worst 79/100 … eyeball
+orange_dash(79)…`), `check.html` shows a green/amber/red badge per curve and draws
+**red dashes over the chord spans** so your eye lands on the exact bad segment, and
+`report.json` records each curve's score. In `cvdigitize batch`, papers are sorted
+CV-like-first then **worst-fidelity-first**, so the traces most in need of a look
+are at the top of the gallery. In practice: vector curves score ~100, solid raster
+curves score high, and same-colour dashed *loops* (whose dashes interleave between
+the two sweep branches — genuinely ambiguous to auto-trace) are the ones flagged
+for a trace_assist re-draw.
+
 ### Calibration JSON (vector figures)
 
 Two linear axis maps (svgdigitizer's reference-point model). Fields: two x

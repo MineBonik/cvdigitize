@@ -268,6 +268,27 @@ code{{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}}
         f.write(html)
 
 
+def _print_fidelity_triage(curves, pdir):
+    """Print the reference-free ink-fidelity summary + which curves to eyeball.
+
+    Fidelity is measured with no ground truth (how well each trace sits on its own
+    ink), so it works on any paper. Amber/red curves are the ones to open in
+    check.html — red dashes there mark chords across empty space to re-trace."""
+    scored = [c for c in curves if c.get("fidelity") is not None]
+    if not scored:
+        return
+    worst = min(c["fidelity"] for c in scored)
+    flagged = sorted((c for c in scored if c.get("fidelity_grade") in ("fair", "poor")),
+                     key=lambda c: c["fidelity"])
+    print(f"Ink-fidelity: worst {worst:.0f}/100 across {len(scored)} curve(s).", end="")
+    if flagged:
+        names = ", ".join(f"{c['color']}({c['fidelity']:.0f})" for c in flagged)
+        print(f" Eyeball {names} in check.html — re-trace in trace_assist if a red-dashed"
+              f" chord is off.")
+    else:
+        print(" Every trace sits on the ink.")
+
+
 def cmd_extract(args):
     pdf = args.pdf
     stem = os.path.splitext(os.path.basename(pdf))[0]
@@ -436,10 +457,11 @@ def _extract_raster(args, pdf, page, stem, out_dir):
     fig.tight_layout(); fig.savefig(os.path.join(pdir, "overlay.png"), dpi=100); plt.close(fig)
 
     from .qc import write_qc
-    write_qc(pdir, r["image"],
-             [{"name": c["name"], "xy": c["polyline_px"], "rgb": c["rgb"]}
-              for c, *_ in processed],
-             panel_stem="panel", title=f"{stem} p{page} panel {plabel}")
+    qc = write_qc(pdir, r["image"],
+                  [{"name": c["name"], "xy": c["polyline_px"], "rgb": c["rgb"]}
+                   for c, *_ in processed],
+                  panel_stem="panel", title=f"{stem} p{page} panel {plabel}")
+    fids = qc.get("fidelity", [])
 
     fig, ax = plt.subplots(figsize=(7, 5))
     for c, data, xlab, ylab, xunit, yunit in processed:
@@ -451,7 +473,7 @@ def _extract_raster(args, pdf, page, stem, out_dir):
     ax.legend(fontsize=8); ax.grid(alpha=0.2)
     fig.tight_layout(); fig.savefig(os.path.join(pdir, "curves.png"), dpi=110); plt.close(fig)
 
-    for c, data, xlab, ylab, xunit, yunit in processed:
+    for k, (c, data, xlab, ylab, xunit, yunit) in enumerate(processed):
         name = f"{stem}_{plabel}_{c['name']}" if len(processed) > 1 else f"{stem}_{plabel}"
         meta = CurveMeta(name=name, figure=(args.figure or f"panel {plabel}"),
                          curve=c["name"], scan_rate=args.scan_rate or "",
@@ -465,16 +487,19 @@ def _extract_raster(args, pdf, page, stem, out_dir):
             p = os.path.join(pdir, name + ".csv")
             write_csv(p, data, meta)
             paths = {"csv": p}
+        fid = fids[k] if k < len(fids) else {}
         report["curves"].append({
             "panel": plabel, "name": name, "color": c["name"], "rgb": list(c["rgb"]),
             "n_points": len(data), "units": [xunit, yunit],
             "loopiness": round(loop_metrics(data)["loopiness"], 3),
+            "fidelity": fid.get("score"), "fidelity_grade": fid.get("grade"),
             "calibration": calib_mode,
-            "files": {k: os.path.relpath(v, rdir) for k, v in paths.items()}})
+            "files": {k2: os.path.relpath(v, rdir) for k2, v in paths.items()}})
 
     with open(os.path.join(rdir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     _write_html_report(rdir, stem, report)
+    _print_fidelity_triage(report["curves"], pdir)
 
     print(f"Extracted {len(processed)} curve(s) from {stem} p{page} panel {plabel} "
           f"({'calibrated' if calib else 'UNCALIBRATED - pass --x-ticks/--y-ticks for real units'}).")
@@ -654,10 +679,15 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         plt.close(fig)
 
         from .qc import write_qc
-        qc_curves = [{"name": pc["group"].name, "xy": pl * 3, "rgb": pc["group"].rgb}
-                     for pc in processed for pl in pc["group"].polylines]
-        write_qc(pdir, img, qc_curves, panel_stem="panel",
-                 title=f"{stem} p{page}" + (f" panel {plabel}" if plabel else ""))
+        from .postprocess import order_curve
+        # one ordered polyline per curve (pixel space = PDF pts x3), so the
+        # fidelity check sees the real curve, not jumps between shuffled sub-paths.
+        qc_curves = [{"name": pc["group"].name,
+                      "xy": order_curve(list(pc["group"].polylines)) * 3,
+                      "rgb": pc["group"].rgb} for pc in processed]
+        qc = write_qc(pdir, img, qc_curves, panel_stem="panel",
+                      title=f"{stem} p{page}" + (f" panel {plabel}" if plabel else ""))
+        vec_fids = qc.get("fidelity", [])
 
         # clean plot of the digitized output itself (the deliverable curves)
         fig, ax = plt.subplots(figsize=(7, 5))
@@ -686,7 +716,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         except Exception:
             plot_legend = {}
         panel_legend = {**plot_legend, **legend_for_panel(curve_legend, plabel or "")}
-        for pc in processed:
+        for pk, pc in enumerate(processed):
             cg = pc["group"]
             name = f"{stem}_" + (f"{plabel}_" if plabel else "") + cg.name
             # if the caption or in-plot legend says what this colour is, use it
@@ -709,11 +739,13 @@ def _extract_vector(args, pdf, page, stem, out_dir):
                 p = os.path.join(pdir, name + ".csv")
                 write_csv(p, pc["data"], meta)
                 paths = {"csv": p}
+            fid = vec_fids[pk] if pk < len(vec_fids) else {}
             report["curves"].append({
                 "panel": plabel, "name": name, "color": cg.name, "rgb": list(cg.rgb),
                 "sample": sample or "", "n_points": len(pc["data"]),
                 "units": [pc["xunit"], pc["yunit"]],
                 "loopiness": pc["loopiness"], "calibration": mode,
+                "fidelity": fid.get("score"), "fidelity_grade": fid.get("grade"),
                 "files": {k: os.path.relpath(v, out_dir) for k, v in paths.items()},
             })
             total += 1
@@ -724,6 +756,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     _write_html_report(out_dir, stem, report)
+    _print_fidelity_triage(report["curves"], out_dir)
 
     mode_desc = ", ".join(sorted(set(modes_seen))) or "none"
     print(f"Extracted {total} curve(s) from {stem} p{page} "
@@ -787,6 +820,9 @@ def cmd_batch(args):
                     n_curves = len(rep["curves"])
                     loops = [c.get("loopiness", 0.0) for c in rep["curves"]]
                     best_loop = max(loops) if loops else 0.0
+                    fscores = [c["fidelity"] for c in rep["curves"]
+                               if c.get("fidelity") is not None]
+                    worst_fid = min(fscores) if fscores else None
                 for cand in glob.glob(os.path.join(paper_out, "**", "overlay.png"), recursive=True):
                     overlay = cand
                     break
@@ -796,17 +832,25 @@ def cmd_batch(args):
             # schematic lines / Nyquist arcs / axis fragments score low.
             conf = "likely CV" if best_loop >= 0.15 else ("maybe" if best_loop >= 0.05 else "unlikely CV")
             conf_color = {"likely CV": "#137333", "maybe": "#b26a00", "unlikely CV": "#a50e0e"}[conf]
+            # Reference-free ink-fidelity: how well the traces sit on the ink.
+            fid_txt, fid_color = "n/a", "#888"
+            if worst_fid is not None:
+                fid_txt = f"worst {worst_fid:.0f}/100"
+                fid_color = ("#137333" if worst_fid >= 85 else
+                             "#b26a00" if worst_fid >= 65 else "#a50e0e")
             summary.append((stem, kind, len(vec), len(ras), n_curves, best_loop, conf, note))
-            rows.append((best_loop, f"""
+            rows.append((best_loop, worst_fid, f"""
             <div class="card">
               <h3>{stem}</h3>
               <p class="meta">{len(infos)} pages · vector figs: {len(vec)} · raster figs: {len(ras)}
                  · page {page} ({kind}) · <b>{n_curves}</b> candidate curves
-                 · <b style="color:{conf_color}">{conf}</b> (loop score {best_loop:.2f}){(' · '+note) if note else ''}</p>
+                 · <b style="color:{conf_color}">{conf}</b> (loop {best_loop:.2f})
+                 · ink-fidelity <b style="color:{fid_color}">{fid_txt}</b>{(' · '+note) if note else ''}</p>
               {'<img src="'+embed(overlay)+'">' if overlay else '<p class="none">no overlay</p>'}
             </div>"""))
+            fid_console = f"fid={worst_fid:.0f}" if worst_fid is not None else "fid=n/a"
             print(f"  {stem:48s} {kind:14s} vec={len(vec)} ras={len(ras)} "
-                  f"curves={n_curves} loop={best_loop:.2f} [{conf}] {note}")
+                  f"curves={n_curves} loop={best_loop:.2f} {fid_console} [{conf}] {note}")
         except Exception as e:
             summary.append((stem, "ERROR", 0, 0, 0, str(e)))
             print(f"  {stem:52s} ERROR {e}")
@@ -823,10 +867,11 @@ img{{max-width:100%;border:1px solid #eee;margin-top:.5rem}} .none{{color:#bbb;f
 </style>
 <h1>cvdigitize — batch survey</h1>
 <p class="sub">{len(pdfs)} PDFs from <code>{args.dir}</code> · {total_curves} candidate curves ·
-sorted by CV-likeness (loop score). "candidate curves" are unverified — the tool
-extracts from whatever figure it auto-picks; a low loop score usually means the
-page is a schematic/Nyquist/other plot, not a CV.</p>
-<div class="grid">{''.join(r for _, r in sorted(rows, key=lambda t: t[0], reverse=True))}</div>"""
+CV-like papers first, then <b>worst ink-fidelity first</b> so the traces most in
+need of a look (or a trace_assist re-draw) are at the top. "candidate curves" are
+unverified; a low loop score usually means the page is a schematic/other plot, not
+a CV, and low ink-fidelity means a trace drifts off the ink (often a chord).</p>
+<div class="grid">{''.join(r for _, _, r in sorted(rows, key=lambda t: (t[0] < 0.05, t[1] if t[1] is not None else 101)))}</div>"""
     idx = os.path.join(out_dir, "index.html")
     with open(idx, "w", encoding="utf-8") as f:
         f.write(html)
