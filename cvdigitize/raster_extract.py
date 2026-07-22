@@ -981,6 +981,32 @@ def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
             "skeleton": skel, "curves": curves}
 
 
+def extract_from_cropped_image(img: np.ndarray, *, value_thresh: float = 0.55,
+                               frame_inset_px: int = 4, max_spur_len: int = 15,
+                               include_legacy: bool = False) -> dict:
+    """Detect-frame + mask + skeletonise an image that ALREADY isolates one
+    plot — e.g. a panel a human cropped by hand (bypassing PDF/page/zoom
+    entirely, unlike :func:`extract_raster_curve`).
+
+    Because the crop already excludes everything except one figure (no
+    schematic, no neighbouring sub-plots), ``detect_all_frames``-style frame
+    detection is reliable here even on composite figures where it explodes
+    into spurious candidates over the WHOLE page (a crystal-structure
+    schematic's sphere shapes read as dozens of fake plot frames) — cropping
+    first is what makes plain frame detection trustworthy again, not a change
+    to the detector itself. Falls back to a 5% margin if no frame is found
+    (mirrors :func:`extract_raster_curve`)."""
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frame = detect_frame_bbox(gray)
+    if frame is None:
+        h, w = gray.shape
+        margin = 0.05
+        frame = (int(w * margin), int(h * margin), int(w * (1 - margin)), int(h * (1 - margin)))
+    return _extract_from_frame(img, frame, value_thresh=value_thresh,
+                               frame_inset_px=frame_inset_px, max_spur_len=max_spur_len,
+                               include_legacy=include_legacy)
+
+
 def extract_raster_curve(
     pdf_path: str,
     page_number: int,
@@ -1003,16 +1029,8 @@ def extract_raster_curve(
     ``Calibration``), plus intermediate arrays useful for debugging/plots.
     """
     img = render_region(pdf_path, page_number, region_bbox, zoom=zoom)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-
-    frame = detect_frame_bbox(gray)
-    if frame is None:
-        h, w = gray.shape
-        margin = 0.05
-        frame = (int(w * margin), int(h * margin), int(w * (1 - margin)), int(h * (1 - margin)))
-
-    result = _extract_from_frame(img, frame, value_thresh=value_thresh,
-                                 frame_inset_px=frame_inset_px, max_spur_len=max_spur_len)
+    result = extract_from_cropped_image(img, value_thresh=value_thresh,
+                                        frame_inset_px=frame_inset_px, max_spur_len=max_spur_len)
     poly_pdf = result["polyline_px"] / zoom + np.array([region_bbox[0], region_bbox[1]])
     return {**result, "polyline": poly_pdf, "image": img}
 
