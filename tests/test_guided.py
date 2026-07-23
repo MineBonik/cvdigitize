@@ -53,6 +53,26 @@ def test_guided_is_precise_from_a_rough_guide():
     assert err < 8.0
 
 
+def test_snap_centers_on_thick_stroke_not_nearest_edge():
+    """A rough guide drawn near one edge of a thick stroke must snap to the
+    stroke's CENTER, not just its own nearest-ink position (which, drawn
+    already-on-ink near an edge, was previously returned almost unchanged --
+    a real complaint: a hand-traced peak looked "rough" because the trace
+    hugged one side of the ink instead of running down the middle)."""
+    h, w = 200, 400
+    img = np.full((h, w, 3), 255, np.uint8)
+    true_center = 100
+    cv2.line(img, (20, true_center), (380, true_center), (0, 0, 0), 16)   # 16px-thick stroke
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    xs = np.linspace(30, 370, 20)
+    guide_pts = [[float(x), true_center - 6.0] for x in xs]   # drawn near the top edge
+
+    out = extract_near_guide(rgb, np.array(guide_pts), radius=12)
+    assert abs(out[:, 1].mean() - true_center) < 2.0
+    assert out[:, 1].std() < 1.0   # centered consistently, not just by luck at a few points
+
+
 def test_extract_guides_named():
     img = _two_crossing_curves()
     gx = np.linspace(30, 470, 12)

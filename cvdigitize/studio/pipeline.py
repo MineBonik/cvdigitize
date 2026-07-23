@@ -6,6 +6,7 @@ into the already-tested extraction code (see STUDIO_PLAN.md §10 reuse map).
 from __future__ import annotations
 
 import base64
+import math
 import os
 
 import cv2
@@ -16,6 +17,7 @@ from ..ingest import classify_pdf, render_page
 from ..raster_extract import (_extract_from_frame, crop_tick_labels,
                               detect_axis_ticks, detect_frame_bbox,
                               exclusion_mask, find_image_regions,
+                              frame_border_mask, frame_border_thickness,
                               measure_line_and_axis_width, render_region)
 from . import workspace as ws
 
@@ -165,7 +167,9 @@ def _score_and_shape_curves(img, calibration: dict, raw_curves: list) -> list:
     return out
 
 
-def autoextract_crop(workspace_dir: str, paper: str, crop: str) -> dict:
+def autoextract_crop(workspace_dir: str, paper: str, crop: str, *,
+                     axis_width_override: float | None = None,
+                     line_width_override: float | None = None) -> dict:
     """/api/autoextract: mask the axis out, then detect-frame + trace (Step 4).
 
     Masking ``exclusion_band`` to white before extraction is the same
@@ -177,9 +181,14 @@ def autoextract_crop(workspace_dir: str, paper: str, crop: str) -> dict:
     detection on that gutted image risks latching onto a leftover corner
     fragment instead of returning "no frame found" -- detecting once, before
     masking, avoids that trap entirely.
+
+    ``axis_width_override``/``line_width_override`` (from Step 3's sliders)
+    let a human correct a bad automatic measurement before extracting.
     """
     img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
-    measurement = measure_line_and_axis_width(img, calibration)
+    measurement = measure_line_and_axis_width(
+        img, calibration, axis_width_override=axis_width_override,
+        line_width_override=line_width_override)
     excl = exclusion_mask(img.shape, measurement["exclusion_band"])
     masked = img.copy()
     masked[excl] = 255
@@ -191,26 +200,68 @@ def autoextract_crop(workspace_dir: str, paper: str, crop: str) -> dict:
         margin = 0.05
         frame = (int(w * margin), int(h * margin), int(w * (1 - margin)), int(h * (1 - margin)))
 
+    # A fixed 4px inset can leave a sliver of the frame's own border inside
+    # `interior` if that border happens to be drawn thicker (its thickness
+    # is NOT assumed equal to the calibrated axis lines' -- they can differ,
+    # e.g. a thin 2px axis inside a thicker 6px outer frame). That sliver
+    # then gets picked up as "curve ink", and once a real curve fades out
+    # near the axis, the stitcher bridges the gap onto it and follows it
+    # all the way around the frame (a real bug, seen live: a straight chord
+    # shot from the curve's faded end up to a corner and back along two
+    # edges). Measuring the frame's own border directly and insetting by at
+    # least that (+ margin) keeps the whole border out regardless.
+    border_thickness = frame_border_thickness(gray < 220, frame)
+    frame_inset_px = max(4, int(math.ceil(border_thickness)) + 3)
+    # belt-and-suspenders: also directly paint the border band white, so an
+    # inset that's a pixel or two short of a real, slightly irregular border
+    # still can't leak border ink into the mask
+    masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
+
     result = _extract_from_frame(masked, frame, value_thresh=0.55,
-                                 frame_inset_px=4, max_spur_len=15)
+                                 frame_inset_px=frame_inset_px, max_spur_len=15)
     curves = _score_and_shape_curves(img, calibration, result.get("curves", []))
     return {"curves": curves, "measurement": measurement}
 
 
-def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list) -> dict:
+def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list, *,
+               axis_width_override: float | None = None,
+               line_width_override: float | None = None) -> dict:
     """/api/trace: the hand-trace fallback, always reachable when the
     auto-extract eye check fails (STUDIO_PLAN.md §2) -- snaps human guide
-    strokes to ink with the per-stroke-radius extraction G2 fixed."""
+    strokes to ink with the per-stroke-radius extraction G2 fixed.
+
+    Masks the axis + frame border out of the ink first, exactly like
+    autoextract_crop -- otherwise a guide drawn near where a curve fades out
+    close to the axis/frame can snap onto that ink instead of stopping, and
+    "follow" it (a real bug seen live: a hand-traced curve escaped along the
+    plot's frame after the real ink faded near the corner). The brush can
+    then never be snapped onto axis or frame ink, only real curve ink.
+    """
     from ..guided import extract_guides
 
     img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
-    results = extract_guides(img, guides, return_gaps=True)
+    measurement = measure_line_and_axis_width(
+        img, calibration, axis_width_override=axis_width_override,
+        line_width_override=line_width_override)
+    excl = exclusion_mask(img.shape, measurement["exclusion_band"])
+    masked = img.copy()
+    masked[excl] = 255
+
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frame = detect_frame_bbox(gray)
+    if frame is not None:
+        border_thickness = frame_border_thickness(gray < 220, frame)
+        masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
+
+    results = extract_guides(masked, guides, return_gaps=True)
     raw_curves = [{"name": r["name"] or "curve", "rgb": None, "polyline_px": r["polyline_px"]}
                  for r in results]
+    # fidelity is scored against the REAL (unmasked) ink -- honest about how
+    # well the trace sits on the actual figure, not the whited-out version
     curves = _score_and_shape_curves(img, calibration, raw_curves)
     for c, r in zip(curves, results):
         c["gaps"] = [[list(p0), list(p1)] for p0, p1 in (r.get("gaps") or [])]
-    return {"curves": curves}
+    return {"curves": curves, "measurement": measurement}
 
 
 def accept_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> dict:
