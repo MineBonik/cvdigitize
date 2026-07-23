@@ -10,6 +10,7 @@ from cvdigitize.raster_extract import (
     mask_dark_curve, largest_component, skeletonize_curve, skeleton_to_polyline,
     _erase_straight_lines, extract_frameless_curve,
     _merge_boxes, locate_plot_regions, extract_scan_curves,
+    _extract_from_frame, extract_from_cropped_image,
 )
 
 
@@ -150,6 +151,35 @@ def test_detect_frame_bbox_finds_single_box():
     assert found is not None
     for a, b in zip(found, box):
         assert abs(a - b) <= 3
+
+
+def test_detect_frame_bbox_rejects_degenerate_thin_box():
+    """Two near-duplicate long horizontal lines a few px apart each pass the
+    per-line length check individually, but together bound a box far too
+    thin to be a real frame -- reject it (None) rather than handing back a
+    box no caller can safely inset (a real crash seen on a live paper:
+    _extract_from_frame's inset slice went empty -> cv2.cvtColor on a (0,n)
+    array). Caller falls back to a sane margin box instead."""
+    img = _blank(h=300, w=400)
+    cv2.line(img, (50, 100), (350, 100), (0, 0, 0), 2)
+    cv2.line(img, (50, 103), (350, 103), (0, 0, 0), 2)
+    cv2.line(img, (50, 40), (50, 260), (0, 0, 0), 2)
+    cv2.line(img, (350, 40), (350, 260), (0, 0, 0), 2)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    assert detect_frame_bbox(gray) is None
+
+
+def test_extract_from_frame_survives_a_degenerate_frame():
+    """Even if a too-thin frame slips through (defense in depth), extraction
+    must fall back gracefully instead of crashing on an empty inset slice."""
+    img = _blank(h=200, w=200)
+    cv2.circle(img, (100, 100), 40, (0, 0, 0), 2)
+    result = _extract_from_frame(img, (50, 50, 52, 150), value_thresh=0.55,
+                                 frame_inset_px=4, max_spur_len=15)
+    assert "polyline_px" in result
+
+    result = extract_from_cropped_image(img)
+    assert "polyline_px" in result
 
 
 def test_detect_all_frames_finds_two_stacked_panels():
