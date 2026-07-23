@@ -67,6 +67,15 @@
           border-radius:6px;padding:3px 8px;font:12px var(--mono);color:var(--muted)}
   .modehelp{position:absolute;top:10px;left:12px;background:rgba(0,0,0,.6);border:1px solid var(--line);
           border-radius:6px;padding:4px 9px;font-size:12px;color:var(--fg);max-width:60ch}
+  .calibrow{border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:6px}
+  .calibrow-top{display:flex;gap:6px;align-items:center}
+  .calibrow-label{width:20px;font-size:12px;color:var(--muted)}
+  .calibrow .setpt{font-size:11px;padding:4px 7px;white-space:nowrap}
+  .calibrow .setpt.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .calibval{background:#0e1116;color:var(--fg);border:1px solid var(--line);border-radius:6px;
+           padding:5px 7px;font:inherit;width:100%;min-width:0}
+  .labelcrop{display:block;margin-top:6px;max-width:100%;border:1px solid var(--line);border-radius:4px;
+            image-rendering:pixelated;background:#fff}
 </style>
 </head>
 <body>
@@ -94,36 +103,64 @@
       <div id="openStatus" class="muted" style="margin-top:7px">no paper open</div>
     </div>
 
-    <div class="card" id="pagesCard" style="display:none">
-      <div class="hd">Pages &amp; sources <span class="muted">(click to load)</span></div>
-      <div id="pageList" style="max-height:320px;overflow:auto"></div>
+    <div id="step1Cards">
+      <div class="card" id="pagesCard" style="display:none">
+        <div class="hd">Pages &amp; sources <span class="muted">(click to load)</span></div>
+        <div id="pageList" style="max-height:320px;overflow:auto"></div>
+      </div>
+
+      <div class="card" id="cropCard" style="display:none">
+        <div class="hd">Crop &amp; classify</div>
+        <div class="hint">
+          Pick the figure type, then drag a box around one real plot on the
+          canvas. Hold <kbd>Alt</kbd> and drag inside it to blank out a
+          legend/text box sitting on the axes. <kbd>Enter</kbd> or <b>Save
+          crop</b> to keep it.
+        </div>
+        <div class="typegrid" id="typeGrid" style="margin-top:9px">
+          <button data-type="single_cv">Single CV</button>
+          <button data-type="multipanel_cv">Multi-panel CV</button>
+          <button data-type="strange_cv">Strange CV</button>
+          <button data-type="other_graph">Other graph</button>
+          <button data-type="not_a_graph" style="grid-column:1/3">Not a graph</button>
+        </div>
+        <div id="cropStatus" class="muted" style="margin:8px 0">no type selected</div>
+        <div class="row">
+          <button id="saveCropBtn" class="primary" disabled>Save crop</button>
+          <button id="clearCropBtn" disabled>Clear</button>
+        </div>
+      </div>
+
+      <div class="card" id="cropsGalleryCard" style="display:none">
+        <div class="hd">Crops <span class="muted">(click to select &amp; re-crop; ✕ to delete)</span></div>
+        <div id="cropsGallery" class="gallery"></div>
+      </div>
     </div>
 
-    <div class="card" id="cropCard" style="display:none">
-      <div class="hd">Crop &amp; classify</div>
-      <div class="hint">
-        Pick the figure type, then drag a box around one real plot on the
-        canvas. Hold <kbd>Alt</kbd> and drag inside it to blank out a
-        legend/text box sitting on the axes. <kbd>Enter</kbd> or <b>Save
-        crop</b> to keep it.
+    <div id="step2Cards" style="display:none">
+      <div class="card" id="calibCard">
+        <div class="hd">Calibrate <span class="muted" id="calibCropName"></span></div>
+        <div class="row">
+          <button id="autoCalibBtn" class="primary">Auto-calibrate</button>
+          <button id="backToCropBtn">&larr; back to crops</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          <b>Auto-calibrate</b> finds the axis frame + tick <b>positions</b>
+          (no OCR) and shows a zoomed crop of each number below — read it and
+          type the value. <b>set pt</b> then click the canvas to place/move a
+          point by hand; drag an existing marker to fix it.
+        </div>
+        <div id="calibGrid" style="margin-top:9px"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="EunitV" type="text" value="V" title="E unit" style="width:52px">
+          <input id="ErefV" type="text" value="RHE" placeholder="ref" title="reference electrode" style="width:64px">
+          <input id="junitV" type="text" value="uA/cm2" title="j unit" style="flex:1">
+        </div>
+        <div class="row" style="margin-top:9px">
+          <button id="saveCalibBtn" class="primary" disabled>Save calibration</button>
+        </div>
+        <div id="calibStatus" class="muted" style="margin-top:7px"></div>
       </div>
-      <div class="typegrid" id="typeGrid" style="margin-top:9px">
-        <button data-type="single_cv">Single CV</button>
-        <button data-type="multipanel_cv">Multi-panel CV</button>
-        <button data-type="strange_cv">Strange CV</button>
-        <button data-type="other_graph">Other graph</button>
-        <button data-type="not_a_graph" style="grid-column:1/3">Not a graph</button>
-      </div>
-      <div id="cropStatus" class="muted" style="margin:8px 0">no type selected</div>
-      <div class="row">
-        <button id="saveCropBtn" class="primary" disabled>Save crop</button>
-        <button id="clearCropBtn" disabled>Clear</button>
-      </div>
-    </div>
-
-    <div class="card" id="cropsGalleryCard" style="display:none">
-      <div class="hd">Crops <span class="muted">(click to re-crop; ✕ to delete)</span></div>
-      <div id="cropsGallery" class="gallery"></div>
     </div>
 
     <div class="muted" style="font-size:11px">Runs against your local <code>cvdigitize studio</code> server — nothing is uploaded anywhere else.</div>
@@ -153,9 +190,10 @@ async function api(method, path, body){
 // ---- state ----
 let paper = null;          // paper stem, once a PDF is open
 let pages = [];            // [{n, kind, n_embedded, vector, sources:[name]}]
-let crops = [];            // [{name, type, source, bbox, excludeRects, parentCrop, ...}]
+let crops = [];            // [{name, type, source, bbox, excludeRects, parentCrop, calibration, ...}]
 let current = null;        // {kind:"source"|"crop", name, image} — what's loaded on canvas
-let mode = "crop";         // crop | pan
+let mode = "crop";         // crop | pan | calib
+let activeStep = 1;
 let view = {z:1, ox:0, oy:0};
 let panning = false, spaceDown = false;
 let cropRect = null;           // [x0,y0,x1,y1] image px, pending
@@ -164,6 +202,14 @@ let cropDragging = null;       // "crop" | "exclude" | null
 let cropDragStart = null;
 let pendingExcludeRect = null;
 let pendingCropType = null;
+
+// ---- step 2: calibrate ----
+const ANCHORS = ["E1","E2","j1","j2"];
+let activeCrop = null;         // crop name selected for calibration, once a crop is loaded
+let calib = null;              // {E1:{px,value},...,E_unit,E_ref,j_unit} for activeCrop
+let labelCrops = {};           // {E1: dataURL, ...} zoomed tick-label crops from last autocalibrate
+let pendingAnchor = null;      // anchor armed by "set pt", placed on next canvas click
+let draggingAnchor = null;     // anchor currently being dragged
 
 const stage = document.getElementById("stage");
 const cv = document.getElementById("cv");
@@ -196,6 +242,8 @@ async function openPaper(){
   try{
     const out = await api("POST", "/api/open_paper", {pdf_path: path});
     paper = out.paper; pages = out.pages;
+    current = null; cropRect = null; excludeRects = []; pendingCropType = null;
+    clearActiveCrop(); setStep(1);
     $("openStatus").textContent = `${paper} — ${pages.length} page(s)`;
     $("pagesCard").style.display = ""; $("cropCard").style.display = "";
     $("cropsGalleryCard").style.display = "";
@@ -232,6 +280,7 @@ function loadSource(name){
   im.onload = () => {
     current = {kind:"source", name, image:im};
     cropRect = null; excludeRects = []; pendingCropType = null;
+    clearActiveCrop();
     updateCropButtons(); fitView(); renderPages(); redraw();
   };
   im.src = `/workspace/${paper}/sources/${name}`;
@@ -242,9 +291,31 @@ function loadCropAsSource(name){
   im.onload = () => {
     current = {kind:"crop", name, image:im};
     cropRect = null; excludeRects = []; pendingCropType = null;
+    setActiveCrop(name);
     updateCropButtons(); fitView(); renderCropsGallery(); redraw();
   };
   im.src = `/workspace/${paper}/crops/${name}.png`;
+}
+
+function setActiveCrop(name){
+  activeCrop = name;
+  const meta = crops.find(c => c.name===name);
+  calib = (meta && meta.calibration) ? JSON.parse(JSON.stringify(meta.calibration)) : {};
+  labelCrops = {}; pendingAnchor = null; draggingAnchor = null;
+  $("EunitV").value = calib.E_unit || "V";
+  $("ErefV").value = calib.E_ref || "RHE";
+  $("junitV").value = calib.j_unit || "uA/cm2";
+  $("calibCropName").textContent = "— " + name;
+  $("calibStatus").textContent = "";
+  updateRailEnabled(); renderCalibGrid();
+}
+function clearActiveCrop(){
+  activeCrop = null; calib = null; labelCrops = {}; pendingAnchor = null; draggingAnchor = null;
+  updateRailEnabled();
+  if(activeStep===2) setStep(1);
+}
+function updateRailEnabled(){
+  document.querySelector('.step[data-step="2"]').classList.toggle("disabled", !activeCrop);
 }
 
 // ---- crops gallery ----
@@ -260,13 +331,15 @@ function renderCropsGallery(){
     const im = document.createElement("img");
     im.src = `/workspace/${paper}/crops/${c.name}.png`;
     t.appendChild(im);
-    const badge = document.createElement("div"); badge.className = "badge"; badge.textContent = c.type;
+    const badge = document.createElement("div"); badge.className = "badge";
+    badge.textContent = c.type + (c.calibration ? " · cal" : "");
     t.appendChild(badge);
     const del = document.createElement("button"); del.className = "del"; del.textContent = "✕"; del.title = "delete";
     del.onclick = async ev => {
       ev.stopPropagation();
       await api("POST", "/api/delete_crop", {paper, crop: c.name});
       if(current && current.kind==="crop" && current.name===c.name) current = null;
+      if(activeCrop===c.name) clearActiveCrop();
       await refreshCrops(); redraw();
     };
     t.appendChild(del);
@@ -330,12 +403,130 @@ async function saveCrop(){
   }
 }
 
-// ---- pointer interaction (crop drag + pan + zoom) ----
+// ---- step 2: calibration grid + auto-calibrate + save ----
+function renderCalibGrid(){
+  const box = $("calibGrid"); box.innerHTML = "";
+  const colors = {E1:"#38bdf8",E2:"#38bdf8",j1:"#f59e0b",j2:"#f59e0b"};
+  ANCHORS.forEach(k => {
+    const has = calib && calib[k] && calib[k].px;
+    const val = has && calib[k].value!=null ? calib[k].value : "";
+    const row = document.createElement("div"); row.className = "calibrow";
+    row.innerHTML = `
+      <div class="calibrow-top">
+        <span class="calibrow-label" style="color:${colors[k]}">${k}</span>
+        <button class="setpt${pendingAnchor===k?" on":""}" data-anchor="${k}">${has?"✓ pt":"set pt"}</button>
+        <input class="calibval" data-anchor="${k}" type="text" inputmode="decimal" placeholder="value" value="${esc(String(val))}">
+      </div>
+      ${labelCrops[k] ? `<img class="labelcrop" src="${labelCrops[k]}" alt="${k} tick label, zoomed">` : ""}
+    `;
+    box.appendChild(row);
+  });
+  updateSaveCalibButton();
+}
+$("calibGrid").addEventListener("click", e => {
+  const b = e.target.closest(".setpt"); if(!b || !calib) return;
+  pendingAnchor = pendingAnchor===b.dataset.anchor ? null : b.dataset.anchor;
+  renderCalibGrid();
+});
+$("calibGrid").addEventListener("input", e => {
+  const inp = e.target.closest(".calibval"); if(!inp || !calib || !calib[inp.dataset.anchor]) return;
+  const v = parseFloat(inp.value);
+  calib[inp.dataset.anchor].value = isNaN(v) ? null : v;
+  updateSaveCalibButton();
+});
+function updateSaveCalibButton(){
+  const complete = !!calib && ANCHORS.every(k => calib[k] && calib[k].px && calib[k].value!=null);
+  $("saveCalibBtn").disabled = !complete;
+}
+function hitTestAnchor(sx, sy){
+  if(!calib) return null;
+  for(const k of ANCHORS){
+    if(!calib[k] || !calib[k].px) continue;
+    const [mx,my] = toScreen(calib[k].px[0], calib[k].px[1]);
+    if(Math.hypot(sx-mx, sy-my) <= 10) return k;
+  }
+  return null;
+}
+async function autoCalibrate(){
+  if(!activeCrop) return;
+  $("calibStatus").textContent = "detecting axis frame + tick positions…"; $("calibStatus").className = "muted";
+  try{
+    const out = await api("POST", "/api/autocalibrate", {paper, crop: activeCrop});
+    labelCrops = out.labelCrops || {};
+    calib = calib || {};
+    ANCHORS.forEach(k => {
+      if(out.points[k]){
+        const prevVal = calib[k] ? calib[k].value : null;
+        calib[k] = {px: out.points[k], value: prevVal};
+      }
+    });
+    renderCalibGrid(); redraw();
+    const missing = ANCHORS.filter(k => !calib[k] || !calib[k].px);
+    $("calibStatus").textContent = missing.length
+      ? `auto-detected ${4-missing.length}/4 points — place ${missing.join(", ")} by hand (set pt, then click the canvas)`
+      : "4/4 points detected — read the zoomed crops below, type the values, drag a marker to fix it";
+  } catch(e){
+    $("calibStatus").textContent = "Error: " + e.message; $("calibStatus").className = "err";
+  }
+}
+$("autoCalibBtn").addEventListener("click", autoCalibrate);
+$("backToCropBtn").addEventListener("click", () => setStep(1));
+async function saveCalibration(){
+  if(!activeCrop || !calib) return;
+  const payload = {...calib, E_unit: $("EunitV").value.trim()||"V",
+                   E_ref: $("ErefV").value.trim(), j_unit: $("junitV").value.trim()};
+  $("saveCalibBtn").disabled = true;
+  try{
+    await api("POST", "/api/save_calibration", {paper, crop: activeCrop, calibration: payload});
+    $("calibStatus").textContent = "saved"; $("calibStatus").className = "muted";
+    await refreshCrops();
+  } catch(e){
+    $("calibStatus").textContent = "Error: " + e.message; $("calibStatus").className = "err";
+  }
+  updateSaveCalibButton();
+}
+$("saveCalibBtn").addEventListener("click", saveCalibration);
+["EunitV","ErefV","junitV"].forEach(id => $(id).addEventListener("input", () => {
+  if(!calib) return;
+  calib.E_unit = $("EunitV").value.trim()||"V"; calib.E_ref = $("ErefV").value.trim(); calib.j_unit = $("junitV").value.trim();
+}));
+
+// ---- step rail ----
+function setStep(n){
+  if(n===2 && !activeCrop) return;
+  if(n>=3) return;   // wired up in later phases (G4/G6)
+  activeStep = n;
+  [...$("stepRail").children].forEach(el => el.classList.toggle("active", +el.dataset.step===n));
+  $("step1Cards").style.display = n===1 ? "" : "none";
+  $("step2Cards").style.display = n===2 ? "" : "none";
+  mode = n===2 ? "calib" : "crop";
+  cv.style.cursor = mode==="calib" ? "cell" : "copy";
+  if(n===2) renderCalibGrid();
+  redraw();
+}
+$("stepRail").addEventListener("click", e => {
+  const s = e.target.closest(".step"); if(!s || s.classList.contains("disabled")) return;
+  setStep(+s.dataset.step);
+});
+
+// ---- pointer interaction (crop drag / calib markers + pan + zoom) ----
 cv.addEventListener("pointerdown", e => {
   if(!current) return;
   cv.setPointerCapture(e.pointerId);
   const [sx,sy] = evPos(e);
   if(mode==="pan" || spaceDown || e.button===1){ panning=true; cv._last=[sx,sy]; cv.style.cursor="grabbing"; return; }
+  if(mode==="calib"){
+    const hit = hitTestAnchor(sx,sy);
+    if(hit){ draggingAnchor = hit; return; }
+    if(pendingAnchor && calib){
+      const img = toImage(sx,sy);
+      const prevVal = calib[pendingAnchor] ? calib[pendingAnchor].value : null;
+      calib[pendingAnchor] = {px:[Math.round(img[0]), Math.round(img[1])], value: prevVal};
+      pendingAnchor = null;
+      renderCalibGrid(); redraw();
+    }
+    return;
+  }
   cropDragging = (e.altKey && cropRect) ? "exclude" : "crop";
   cropDragStart = toImage(sx,sy);
   if(cropDragging==="crop"){ cropRect=null; excludeRects=[]; updateCropButtons(); }
@@ -343,6 +534,12 @@ cv.addEventListener("pointerdown", e => {
 cv.addEventListener("pointermove", e => {
   const [sx,sy] = evPos(e);
   if(panning){ view.ox += sx-cv._last[0]; view.oy += sy-cv._last[1]; cv._last=[sx,sy]; redraw(); return; }
+  if(draggingAnchor){
+    const img = toImage(sx,sy);
+    calib[draggingAnchor].px = [Math.round(img[0]), Math.round(img[1])];
+    redraw();
+    return;
+  }
   if(cropDragging){
     const cur = toImage(sx,sy);
     const rect = [Math.min(cropDragStart[0],cur[0]), Math.min(cropDragStart[1],cur[1]),
@@ -352,7 +549,9 @@ cv.addEventListener("pointermove", e => {
   }
 });
 cv.addEventListener("pointerup", () => {
-  panning=false; cv.style.cursor = mode==="pan"?"grab":"copy";
+  panning=false;
+  if(draggingAnchor){ draggingAnchor = null; renderCalibGrid(); updateSaveCalibButton(); return; }
+  cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"copy");
   if(cropDragging==="exclude" && pendingExcludeRect){
     const r = pendingExcludeRect; pendingExcludeRect = null;
     if(r[2]-r[0] > 4 && r[3]-r[1] > 4) excludeRects.push(r);
@@ -375,14 +574,9 @@ cv.addEventListener("wheel", e => {
 document.addEventListener("keydown", e => {
   if(e.code==="Space"){ spaceDown=true; cv.style.cursor="grab"; }
   if(e.key==="0"){ fitView(); redraw(); }
-  if(e.key==="Enter" && !$("saveCropBtn").disabled) saveCrop();
+  if(e.key==="Enter" && activeStep===1 && !$("saveCropBtn").disabled) saveCrop();
 });
-document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false; cv.style.cursor = mode==="pan"?"grab":"copy"; } });
-
-// ---- step rail (Step 1 only for now; later phases wire 2-5) ----
-$("stepRail").addEventListener("click", e => {
-  const s = e.target.closest(".step"); if(!s || s.classList.contains("disabled")) return;
-});
+document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"copy"); } });
 
 // ---- rendering ----
 function redraw(){
@@ -395,7 +589,7 @@ function redraw(){
 
   const w = cv.width, h = cv.height;
   ctx.save();
-  if(cropRect){
+  if(activeStep===1 && cropRect){
     const [x0,y0] = toScreen(cropRect[0],cropRect[1]), [x1,y1] = toScreen(cropRect[2],cropRect[3]);
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(0,0,w,y0); ctx.fillRect(0,y1,w,h-y1);
@@ -413,8 +607,21 @@ function redraw(){
       ctx.strokeStyle = "#f43f5e"; ctx.setLineDash([4,3]); ctx.strokeRect(ex0,ey0,ex1-ex0,ey1-ey0); ctx.setLineDash([]);
     }
   }
+  if(activeStep===2 && calib){
+    const colors = {E1:"#38bdf8",E2:"#38bdf8",j1:"#f59e0b",j2:"#f59e0b"};
+    ANCHORS.forEach(k => {
+      const v = calib[k]; if(!v || !v.px) return;
+      const [x,y] = toScreen(v.px[0], v.px[1]);
+      ctx.strokeStyle = colors[k]; ctx.fillStyle = colors[k];
+      ctx.lineWidth = draggingAnchor===k ? 3 : 1.5;
+      ctx.beginPath(); ctx.moveTo(x-8,y); ctx.lineTo(x+8,y); ctx.moveTo(x,y-8); ctx.lineTo(x,y+8); ctx.stroke();
+      ctx.font = "12px sans-serif"; ctx.fillText(k, x+9, y-4);
+    });
+  }
   ctx.restore();
-  $("modehelp").textContent = current ? "Drag a box to crop. Alt+drag inside it to mask. Scroll = zoom, hold Space to pan." : "";
+  $("modehelp").textContent = !current ? "" : mode==="calib"
+    ? "Click “set pt” then click the canvas to place a point, or drag an existing marker to fix it. Scroll = zoom, hold Space to pan."
+    : "Drag a box to crop. Alt+drag inside it to mask. Scroll = zoom, hold Space to pan.";
   $("zbadge").textContent = Math.round(view.z*100)+"%";
 }
 redraw();
