@@ -111,7 +111,8 @@ def render_region(pdf_path: str, page_number: int,
 # 1. Axes-frame detection
 # --------------------------------------------------------------------------- #
 def detect_frame_bbox(gray: np.ndarray, *, dark_thresh: int = 220,
-                      min_len_frac: float = 0.35) -> tuple[int, int, int, int] | None:
+                      min_len_frac: float = 0.35,
+                      min_size_frac: float = 0.15) -> tuple[int, int, int, int] | None:
     """Find the plot's rectangular axes box via long straight Hough lines.
 
     Works even when the curve, ticks and frame share the same dark colour: the
@@ -119,6 +120,16 @@ def detect_frame_bbox(gray: np.ndarray, *, dark_thresh: int = 220,
     the image, so filtering by minimum length isolates them from the (locally
     curvy, shorter) data curve. Returns ``(x0, y0, x1, y1)`` in pixel
     coordinates, or ``None`` if no confident frame was found.
+
+    A genuine frame's four sides come from *matching* long lines, but each
+    side's own minimum-length check doesn't guarantee the sides are far apart
+    from each other: two near-duplicate long horizontal lines (anti-aliasing,
+    or an unrelated long-straight stretch of curve/ink) can sit only a few
+    rows apart and still each individually pass ``min_len_frac``, yielding a
+    box too thin to be a real frame -- and too thin for ``frame_inset_px`` to
+    safely inset without producing an empty interior slice downstream. Reject
+    that case here (return None, so callers fall back to a margin box)
+    instead of handing out a box no caller can safely use.
     """
     h, w = gray.shape
     dark = (gray < dark_thresh).astype(np.uint8) * 255
@@ -152,6 +163,8 @@ def detect_frame_bbox(gray: np.ndarray, *, dark_thresh: int = 220,
     left = min(c[0] for c in vert)
     right = max(c[0] for c in vert)
     if right <= left or bottom <= top:
+        return None
+    if (right - left) < min_size_frac * w or (bottom - top) < min_size_frac * h:
         return None
     return left, top, right, bottom
 
@@ -1092,16 +1105,26 @@ def _extract_from_frame(img: np.ndarray, frame: tuple[int, int, int, int], *,
                         max_spur_len: int, include_legacy: bool = False) -> dict:
     """Curve isolation for one already-located frame, in ``img``'s own pixel space."""
     x0, y0, x1, y1 = frame
-    inset = frame_inset_px
-    interior = img[y0 + inset:y1 - inset, x0 + inset:x1 - inset]
+    h, w = img.shape[:2]
+    iy0, iy1 = y0 + frame_inset_px, y1 - frame_inset_px
+    ix0, ix1 = x0 + frame_inset_px, x1 - frame_inset_px
+    if iy1 <= iy0 or ix1 <= ix0:
+        # The frame is too small to inset safely (e.g. a spurious sliver from
+        # frame detection) -- rather than slice to empty and crash downstream
+        # (cv2.cvtColor on a (0, n) array), fall back to the frame's own
+        # bounds uninset, clamped to the image; if even that's degenerate,
+        # use the whole image.
+        iy0, iy1 = (y0, y1) if y1 > y0 else (0, h)
+        ix0, ix1 = (x0, x1) if x1 > x0 else (0, w)
+    interior = img[iy0:iy1, ix0:ix1]
 
     mask = mask_dark_curve(interior, value_thresh=value_thresh)
     comp = largest_component(mask)
     skel = skeletonize_curve(comp)
     poly_px = skeleton_to_polyline(skel, max_spur_len=max_spur_len)  # (x, y) in `interior` px
-    poly_px = poly_px + np.array([x0 + inset, y0 + inset])           # -> `img` pixel space
+    poly_px = poly_px + np.array([ix0, iy0])                         # -> `img` pixel space
 
-    offset = np.array([x0 + inset, y0 + inset], dtype=float)
+    offset = np.array([ix0, iy0], dtype=float)
     curves = []
     for cdict in split_color_curves(interior, value_thresh=value_thresh,
                                     max_spur_len=max_spur_len,
