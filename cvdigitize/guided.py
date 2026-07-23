@@ -101,15 +101,21 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
     """Extract the curve the guide points at, as an (x, y) pixel polyline.
 
     ``guide_xy`` is a rough (M, 2) polyline in image-pixel coordinates (the human
-    scribble); pass ``strokes`` (a list of separate point-lists) instead when the
+    scribble); pass ``strokes`` (a list of separate strokes) instead when the
     guide was drawn as several mouse-drags — each is snapped to ink
     independently, so a pen-lift between drags is never mistaken for curve ink.
     If only ``guide_xy`` is given, likely stroke boundaries are recovered from
     anomalous point-to-point jumps (:func:`split_strokes`).
 
+    Each stroke may be a plain ``[[x,y], ...]`` point list (uses ``radius``) or
+    a ``{"radius": r, "pts": [[x,y], ...]}`` dict carrying its OWN brush size —
+    the tracer records the brush width at the moment each stroke was drawn, so
+    changing the brush mid-curve only affects strokes drawn after the change,
+    never ones already on the canvas.
+
     Each stroke is densified and, at every position along it, snapped to the
-    nearest curve-ink pixel within ``radius`` (~2% of the image diagonal by
-    default — enough to cover a hand-drawn wobble). The per-stroke snapped
+    nearest curve-ink pixel within its radius (default: ~2% of the image
+    diagonal — enough to cover a hand-drawn wobble). The per-stroke snapped
     pieces are then stitched into one ordered curve the same way the rest of
     the pipeline stitches fragmented sub-paths (nearest-endpoint), so strokes
     drawn in any order or direction still assemble correctly. Returns an empty
@@ -130,28 +136,36 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
     def _ret(poly, gaps):
         return (poly, gaps) if return_gaps else poly
 
+    h, w = rgb.shape[:2]
+    default_radius = radius if radius is not None else max(6, int(0.02 * np.hypot(h, w)))
+
     if strokes is not None:
-        stroke_list = [np.asarray(s, float) for s in strokes if len(s) >= 2]
+        stroke_list = []
+        for s in strokes:
+            if isinstance(s, dict):
+                pts = np.asarray(s.get("pts", s.get("points", [])), float)
+                r = float(s.get("radius") or default_radius)
+            else:
+                pts = np.asarray(s, float)
+                r = float(default_radius)
+            if len(pts) >= 2:
+                stroke_list.append((pts, r))
     else:
-        stroke_list = split_strokes(guide_xy)
+        stroke_list = [(s, float(default_radius)) for s in split_strokes(guide_xy)]
     if not stroke_list:
         return _ret(np.empty((0, 2)), [])
 
-    h, w = rgb.shape[:2]
-    if radius is None:
-        radius = max(6, int(0.02 * np.hypot(h, w)))
-
     ink = _ink_mask(rgb, value_thresh=value_thresh)
     corridor = np.zeros(rgb.shape[:2], bool)
-    for s in stroke_list:
-        corridor |= _corridor_mask(rgb.shape, s, radius)
+    for pts, r in stroke_list:
+        corridor |= _corridor_mask(rgb.shape, pts, int(round(r)))
     ys, xs = np.where(ink & corridor)
     if len(xs) < 10:
         return _ret(np.empty((0, 2)), [])
     ink_pts = np.column_stack([xs, ys]).astype(float)
     tree = cKDTree(ink_pts)
 
-    pieces = [p for p in (_snap_stroke(s, tree, ink_pts, radius) for s in stroke_list)
+    pieces = [p for p in (_snap_stroke(pts, tree, ink_pts, r) for pts, r in stroke_list)
              if len(p) >= 3]
     if not pieces:
         return _ret(np.empty((0, 2)), [])
@@ -166,8 +180,9 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
     # as if they were guided.
     gaps = []
     if len(ordered) > 1 and return_gaps:
+        mean_r = float(np.mean([r for _, r in stroke_list]))
         step = np.hypot(*(np.diff(ordered, axis=0).T))
-        thresh = max(3.0 * radius, 4.0 * (np.median(step) or 1.0))
+        thresh = max(3.0 * mean_r, 4.0 * (np.median(step) or 1.0))
         for i in np.where(step > thresh)[0]:
             gaps.append((tuple(ordered[i]), tuple(ordered[i + 1])))
 

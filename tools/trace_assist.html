@@ -318,7 +318,7 @@ function renderCurves(){
   if(p) p.curves.forEach((c,i) => {
     const li = document.createElement("li");
     if(i===active) li.className = "active";
-    const n = c.strokes.reduce((s,st)=>s+st.length,0);
+    const n = c.strokes.reduce((s,st)=>s+st.pts.length,0);
     li.innerHTML = `<span class="swatch" style="background:${c.color}"></span>
       <span class="nm">${esc(c.name)}</span><span class="cnt">${n}</span>`;
     const del = document.createElement("button"); del.textContent="✕"; del.title="delete";
@@ -408,15 +408,17 @@ cv.addEventListener("pointerdown", e => {
     if(cropDragging==="crop"){ cropRect=null; excludeRects=[]; updateCropButtons(); }
     return;
   }
-  // draw
+  // draw — the brush at THIS moment is recorded on the new stroke itself, so
+  // changing the slider mid-curve only affects strokes drawn after the change
+  // (see cvdigitize.guided.extract_near_guide's per-stroke radius handling)
   if(active<0){ return; }
-  p.curves[active].radius = brush;
-  drawing=true; p.curves[active].strokes.push([toImage(sx,sy)]);
+  p.curves[active].radius = brush;   // "last used" — export fallback only, never authoritative
+  drawing=true; p.curves[active].strokes.push({radius: brush, pts: [toImage(sx,sy)]});
 });
 cv.addEventListener("pointermove", e => {
   const [sx,sy] = evPos(e);
   if(panning){ view.ox += sx-cv._last[0]; view.oy += sy-cv._last[1]; cv._last=[sx,sy]; redraw(); return; }
-  if(drawing){ const st=P().curves[active].strokes; st[st.length-1].push(toImage(sx,sy)); redraw(); }
+  if(drawing){ const st=P().curves[active].strokes; st[st.length-1].pts.push(toImage(sx,sy)); redraw(); }
   if(cropDragging){
     const cur = toImage(sx,sy);
     const rect = [Math.min(cropDragStart[0],cur[0]), Math.min(cropDragStart[1],cur[1]),
@@ -531,7 +533,7 @@ $("exportTriageBtn").addEventListener("click", () => {
     calibration: (p.calib.E1 && p.calib.E2 && p.calib.j1 && p.calib.j2) ? p.calib : null,
     guides: p.curves.map(c => ({
       name: c.name, radius: c.radius,
-      strokes: c.strokes.filter(s=>s.length>1).map(s=>s.map(round)),
+      strokes: c.strokes.filter(s=>s.pts.length>1).map(s=>({radius: s.radius, pts: s.pts.map(round)})),
       calibration: (c.calib && c.calib.E1 && c.calib.E2 && c.calib.j1 && c.calib.j2) ? c.calib : undefined,
     })).filter(g => g.strokes.length>0 || p.triageDecision==="cv"),
   }));
@@ -552,14 +554,15 @@ function redraw(){
   // curves
   p.curves.forEach((c,i) => {
     ctx.strokeStyle = c.color; ctx.lineJoin=ctx.lineCap="round";
-    ctx.lineWidth = Math.max(2, (i===active?c.radius:c.radius*0.7)*view.z*0.5);
     ctx.globalAlpha = i===active ? 0.5 : 0.3;
     c.strokes.forEach(st => { ctx.beginPath();
-      st.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+      const r = st.radius||c.radius;
+      ctx.lineWidth = Math.max(2, (i===active?r:r*0.7)*view.z*2.0);
+      st.pts.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
     // thin centre line
     ctx.globalAlpha = i===active?1:0.6; ctx.lineWidth = i===active?2:1.2;
     c.strokes.forEach(st => { ctx.beginPath();
-      st.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+      st.pts.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
   });
   ctx.globalAlpha = 1;
   // calibration markers — for whichever target ("panel" or a curve) is selected
@@ -605,7 +608,7 @@ function validCalib(c){
 }
 function updateExport(){
   const p = P();
-  const has = p && p.curves.some(c => c.strokes.some(s => s.length>1));
+  const has = p && p.curves.some(c => c.strokes.some(s => s.pts.length>1));
   $("exportBtn").disabled = !has;
 }
 $("exportBtn").addEventListener("click", () => {
@@ -614,7 +617,7 @@ $("exportBtn").addEventListener("click", () => {
   const guides = p.curves
     .map(c => {
       const g = {name:c.name, radius:c.radius,
-                strokes:c.strokes.filter(s=>s.length>1).map(s=>s.map(round))};
+                strokes:c.strokes.filter(s=>s.pts.length>1).map(s=>({radius: s.radius, pts: s.pts.map(round)}))};
       const cc = validCalib(c.calib);           // per-curve override, only if fully set
       if(cc) g.calibration = cc;
       return g;
@@ -635,7 +638,11 @@ $("loadJson").addEventListener("change", e => {
     const p = P(); if(!p){ alert("Load the figure image first, then the guides."); return; }
     p.curves = (d.guides||[]).map((g,i)=>({name:g.name||`curve ${i+1}`, color:PALETTE[i%PALETTE.length],
       radius:g.radius||brush,
-      strokes: g.strokes ? g.strokes.map(s=>s.map(pt=>[pt[0],pt[1]])) : [g.points.map(pt=>[pt[0],pt[1]])],
+      // handles 3 formats: new {radius,pts} strokes, old flat-array strokes
+      // (guide-level radius/brush fallback), and oldest guide.points-only
+      strokes: (g.strokes || (g.points?[g.points]:[])).map(s => Array.isArray(s)
+        ? {radius: g.radius||brush, pts: s.map(pt=>[pt[0],pt[1]])}
+        : {radius: s.radius||g.radius||brush, pts: (s.pts||[]).map(pt=>[pt[0],pt[1]])}),
       calib: g.calibration || undefined}));      // per-curve override, if this guide had one
     p.calib = d.calibration || {};               // panel default (old flat-calibration files load straight in)
     active = p.curves.length-1; calibTarget="panel"; renderCurves(); redraw(); updateExport();
