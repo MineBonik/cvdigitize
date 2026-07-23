@@ -281,6 +281,23 @@ def test_save_calibration_missing_crop_is_404(server, tmp_path):
     assert "error" in out
 
 
+def test_require_crop_image_rejects_empty_array_cleanly(tmp_path, monkeypatch):
+    """A decoded-but-empty image (e.g. a degenerate 0-size crop that somehow
+    made it to disk) must raise a clean, catchable error at this boundary --
+    not propagate into OpenCV and crash with a cryptic native assertion."""
+    from cvdigitize.studio import pipeline
+    from cvdigitize.studio import workspace as ws
+
+    workspace = str(tmp_path / "workspace")
+    meta = ws.save_crop(workspace, "paperEmpty", type_="single_cv", source="p0_img0.png",
+                        bbox=[0, 0, 10, 10], exclude_rects=[], image_data_url=_tiny_crop_data_url())
+    crop_name = meta["name"]
+
+    monkeypatch.setattr(pipeline.ws, "load_crop_image", lambda *a, **k: np.zeros((0, 0, 3), np.uint8))
+    with pytest.raises(FileNotFoundError):
+        pipeline._require_crop_image(workspace, "paperEmpty", crop_name)
+
+
 # --------------------------------------------------------------------------- #
 # G4: measure / autoextract / trace / accept_curves
 # --------------------------------------------------------------------------- #

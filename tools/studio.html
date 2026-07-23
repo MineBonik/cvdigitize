@@ -416,7 +416,11 @@ function loadCropAsSource(name){
     im.onload = () => {
       current = {kind:"crop", name, image:im};
       cropRect = null; excludeRects = []; pendingCropType = null;
-      setActiveCrop(name);
+      // re-clicking the crop that's ALREADY active (e.g. to re-crop it, or
+      // just to bring it back into view) must not blow away in-progress,
+      // not-yet-saved calibration/label edits by reloading from the last
+      // server-saved state -- only (re)initialize when switching crops
+      if(activeCrop !== name) setActiveCrop(name);
       updateCropButtons(); fitView(); renderCropsGallery(); redraw();
       resolve();
     };

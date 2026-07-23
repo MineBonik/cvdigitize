@@ -73,14 +73,23 @@ def _png_data_url(rgb) -> str:
 _LABEL_KEY_TO_ANCHOR = {"x_lo": "E1", "x_hi": "E2", "y_lo": "j1", "y_hi": "j2"}
 
 
+def _require_crop_image(workspace_dir: str, paper: str, crop: str):
+    """Load a crop's image, rejecting both "file missing" (None) and a
+    decoded-but-empty array (a degenerate 0-size crop) at this boundary --
+    letting either through crashes deep inside OpenCV with a cryptic native
+    assertion (``!_src.empty()``) instead of a clear, catchable error."""
+    img = ws.load_crop_image(workspace_dir, paper, crop)
+    if img is None or img.size == 0:
+        raise FileNotFoundError(f"{paper}/{crop}")
+    return img
+
+
 def autocalibrate_crop(workspace_dir: str, paper: str, crop: str) -> dict:
     """/api/autocalibrate: detect the axis frame + tick *positions* only (no
     OCR, no guessed values — STUDIO_PLAN.md §2's locked decision). The human
     reads the returned zoomed label crops and types the 2 values per axis.
     """
-    img = ws.load_crop_image(workspace_dir, paper, crop)
-    if img is None:
-        raise FileNotFoundError(f"{paper}/{crop}")
+    img = _require_crop_image(workspace_dir, paper, crop)
 
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     frame = detect_frame_bbox(gray)
@@ -109,9 +118,7 @@ def autocalibrate_crop(workspace_dir: str, paper: str, crop: str) -> dict:
 
 
 def _load_crop_and_calibration(workspace_dir: str, paper: str, crop: str):
-    img = ws.load_crop_image(workspace_dir, paper, crop)
-    if img is None:
-        raise FileNotFoundError(f"{paper}/{crop}")
+    img = _require_crop_image(workspace_dir, paper, crop)
     meta = ws.load_crop_meta(workspace_dir, paper, crop)
     calibration = meta.get("calibration") if meta else None
     if not calibration:

@@ -547,26 +547,34 @@ def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict) -> dict
     axis line is never mistaken for curve data. ``line_width`` (measured on
     the non-axis ink) drives adaptive defaults: brush ~= 1.8x, on-ink
     tolerance ~= 1x (see STUDIO_PLAN.md §8).
+
+    An axis is drawn as one continuous straight line and routinely extends
+    past the outermost calibration tick (e.g. to the plot's frame or origin)
+    -- calibration only pins the axis's pixel ROW/COLUMN, not where it stops.
+    So while *thickness* is only sampled between the two calibration points
+    (where the axis is known to exist, clear of any surrounding frame/legend),
+    the exclusion band that masks it out of extraction spans the full crop.
     """
     from .guided import _ink_mask
 
     e1, e2, j1, j2 = _calib_anchor_points(calibration)
+    h, w = crop_rgb.shape[:2]
     x_axis_row = int(round((e1[1] + e2[1]) / 2))
     y_axis_col = int(round((j1[0] + j2[0]) / 2))
-    x_span = (int(round(e1[0])), int(round(e2[0])))
-    y_span = (int(round(j1[1])), int(round(j2[1])))
+    sample_x_span = (int(round(e1[0])), int(round(e2[0])))
+    sample_y_span = (int(round(j1[1])), int(round(j2[1])))
 
     gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
     dark = gray < 220
 
-    axis_w_x = _axis_thickness(dark, fixed_index=x_axis_row, span=x_span, along_columns=True)
-    axis_w_y = _axis_thickness(dark, fixed_index=y_axis_col, span=y_span, along_columns=False)
+    axis_w_x = _axis_thickness(dark, fixed_index=x_axis_row, span=sample_x_span, along_columns=True)
+    axis_w_y = _axis_thickness(dark, fixed_index=y_axis_col, span=sample_y_span, along_columns=False)
     axis_width = float(np.median([axis_w_x, axis_w_y]))
 
     half = max(1.0, axis_width / 2.0 + 1.0)   # measured half-thickness + a small margin
     exclusion_band = {
-        "x_axis": {"y": x_axis_row, "half_width": half, "x_range": [min(x_span), max(x_span)]},
-        "y_axis": {"x": y_axis_col, "half_width": half, "y_range": [min(y_span), max(y_span)]},
+        "x_axis": {"y": x_axis_row, "half_width": half, "x_range": [0, w]},
+        "y_axis": {"x": y_axis_col, "half_width": half, "y_range": [0, h]},
     }
 
     ink = _ink_mask(crop_rgb)
