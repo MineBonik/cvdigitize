@@ -1,0 +1,191 @@
+"""Server tests for CV Studio's API (STUDIO_PLAN.md §12): drive each endpoint
+with urllib against a background ThreadingHTTPServer bound to an OS-assigned
+port (``--no-open`` equivalent), and assert response shape + files land in
+the workspace. No browser needed."""
+import base64
+import json
+import os
+import threading
+import urllib.error
+import urllib.request
+
+import cv2
+import fitz
+import numpy as np
+import pytest
+
+from cvdigitize.studio.server import make_server
+
+
+@pytest.fixture
+def server(tmp_path):
+    workspace = str(tmp_path / "workspace")
+    srv = make_server(workspace, port=0)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    port = srv.server_address[1]
+    yield f"http://127.0.0.1:{port}", workspace
+    srv.shutdown()
+    srv.server_close()
+
+
+def _get(base, path):
+    with urllib.request.urlopen(base + path) as r:
+        return r.status, json.loads(r.read())
+
+
+def _post(base, path, payload):
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(base + path, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _make_pdf_with_embedded_image(path: str):
+    """A one-page PDF whose page is dominated by one embedded raster image,
+    so find_image_regions picks it up (mirrors a scanned-figure paper)."""
+    img = np.full((240, 320, 3), 255, np.uint8)
+    cv2.rectangle(img, (20, 20), (300, 220), (0, 0, 0), 2)
+    xs = np.arange(30, 290)
+    ys = 120 + 70 * np.sin(xs / 40)
+    for x, y in zip(xs, ys.astype(int)):
+        cv2.circle(img, (int(x), y), 2, (0, 0, 0), -1)
+    png_path = path + ".png"
+    cv2.imwrite(png_path, img)
+
+    doc = fitz.open()
+    page = doc.new_page(width=320, height=240)
+    page.insert_image(fitz.Rect(0, 0, 320, 240), filename=png_path)
+    doc.save(path)
+    doc.close()
+    os.remove(png_path)
+
+
+def test_open_paper_extracts_sources_and_writes_analysis(server, tmp_path):
+    base, workspace = server
+    pdf = str(tmp_path / "hoshi_2008_surface_6070.pdf")
+    _make_pdf_with_embedded_image(pdf)
+
+    status, out = _post(base, "/api/open_paper", {"pdf_path": pdf})
+    assert status == 200
+    assert out["paper"] == "hoshi_2008_surface_6070"
+    assert len(out["pages"]) == 1
+    page0 = out["pages"][0]
+    assert page0["n_embedded"] >= 1
+    assert page0["sources"], "expected at least one source image"
+
+    analysis_path = os.path.join(workspace, "hoshi_2008_surface_6070", "analysis.json")
+    assert os.path.exists(analysis_path)
+    for name in page0["sources"]:
+        assert os.path.exists(os.path.join(workspace, "hoshi_2008_surface_6070", "sources", name))
+
+
+def test_open_paper_missing_pdf_returns_404(server):
+    base, _ = server
+    status, out = _post(base, "/api/open_paper", {"pdf_path": "does_not_exist.pdf"})
+    assert status == 404
+    assert "error" in out
+
+
+def test_open_paper_missing_field_returns_400(server):
+    base, _ = server
+    status, out = _post(base, "/api/open_paper", {})
+    assert status == 400
+    assert "error" in out
+
+
+def _tiny_crop_data_url() -> str:
+    img = np.full((40, 60, 3), 200, np.uint8)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def test_save_list_delete_crop_roundtrip(server, tmp_path):
+    base, workspace = server
+    pdf = str(tmp_path / "paperX.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+
+    status, out = _post(base, "/api/save_crop", {
+        "paper": "paperX", "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [10, 10, 50, 50], "excludeRects": [], "image": _tiny_crop_data_url(),
+    })
+    assert status == 200
+    crop_name = out["crop"]
+    assert crop_name == "paperX_crop1"
+    png_path = os.path.join(workspace, "paperX", "crops", crop_name + ".png")
+    json_path = os.path.join(workspace, "paperX", "crops", crop_name + ".json")
+    assert os.path.exists(png_path)
+    assert os.path.exists(json_path)
+    with open(json_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["type"] == "single_cv"
+    assert meta["bbox"] == [10, 10, 50, 50]
+
+    status, out = _get(base, "/api/list_crops?paper=paperX")
+    assert status == 200
+    assert [c["name"] for c in out["crops"]] == [crop_name]
+
+    # a re-crop chains off a parent crop, not a raw source
+    status, out2 = _post(base, "/api/save_crop", {
+        "paper": "paperX", "type": "single_cv", "source": crop_name,
+        "bbox": [0, 0, 30, 30], "excludeRects": [], "image": _tiny_crop_data_url(),
+        "parentCrop": crop_name,
+    })
+    assert status == 200
+    assert out2["crop"] == "paperX_crop2"
+    assert out2["meta"]["parentCrop"] == crop_name
+
+    status, out = _post(base, "/api/delete_crop", {"paper": "paperX", "crop": crop_name})
+    assert status == 200
+    assert out["ok"] is True
+    assert not os.path.exists(png_path)
+    assert not os.path.exists(json_path)
+
+    status, out = _get(base, "/api/list_crops?paper=paperX")
+    assert [c["name"] for c in out["crops"]] == ["paperX_crop2"]
+
+
+def test_save_crop_bad_type_returns_400(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperY.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+
+    status, out = _post(base, "/api/save_crop", {
+        "paper": "paperY", "type": "not_a_real_type", "source": "p0_img0.png",
+        "bbox": [0, 0, 10, 10], "excludeRects": [], "image": _tiny_crop_data_url(),
+    })
+    assert status == 400
+    assert "error" in out
+
+
+def test_workspace_static_serving_and_traversal_guard(server, tmp_path):
+    base, workspace = server
+    pdf = str(tmp_path / "paperZ.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+
+    with urllib.request.urlopen(base + "/workspace/paperZ/sources/p0_img0.png") as r:
+        assert r.status == 200
+        assert r.headers["Content-Type"] == "image/png"
+
+    # a traversal attempt must not escape the workspace root
+    try:
+        with urllib.request.urlopen(base + "/workspace/../../../../etc/passwd") as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status in (400, 404)
+
+
+def test_unknown_route_is_404(server):
+    base, _ = server
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(base + "/api/does_not_exist")
+    assert exc.value.code == 404

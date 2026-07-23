@@ -768,6 +768,13 @@ def _extract_vector(args, pdf, page, stem, out_dir):
     return 0
 
 
+def cmd_studio(args):
+    """Launch the CV Studio guided workflow (local browser UI + companion server)."""
+    from .studio.server import run
+    run(workspace_dir=args.workspace, port=args.port, open_browser=not args.no_open)
+    return 0
+
+
 def cmd_batch(args):
     """Run over every PDF in a folder and build a gallery index.html.
 
@@ -954,10 +961,16 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("dir", help="folder containing PDFs")
     pb.add_argument("--out", default=None, help="output dir (default data/out/_batch)")
     pb.set_defaults(func=cmd_batch)
+
+    ps = sub.add_parser("studio", help="launch CV Studio (guided step-by-step browser workflow)")
+    ps.add_argument("--port", type=int, default=8799)
+    ps.add_argument("--workspace", default=os.path.join("data", "workspace"))
+    ps.add_argument("--no-open", action="store_true", help="don't auto-open a browser tab")
+    ps.set_defaults(func=cmd_studio)
     return p
 
 
-_KNOWN_COMMANDS = {"info", "extract", "grid", "batch", "-h", "--help"}
+_KNOWN_COMMANDS = {"info", "extract", "grid", "batch", "studio", "-h", "--help"}
 
 
 def _with_implicit_extract(argv: list[str]) -> list[str]:

@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CV Studio</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --line:#252b34; --fg:#e7ebf0; --muted:#96a0af;
+    --accent:#2dd4bf; --accent-ink:#062b28; --warn:#f59e0b; --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:baseline;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;margin:0;letter-spacing:-.01em}
+  header .sub{color:var(--muted);font-size:12.5px}
+  .wrap{display:grid;grid-template-columns:230px 320px 1fr;min-height:calc(100vh - 50px)}
+  .rail{border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:6px}
+  .rail .step{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;cursor:pointer;
+              color:var(--muted);border:1px solid transparent}
+  .rail .step .n{width:20px;height:20px;border-radius:50%;border:1px solid var(--line);display:flex;
+                 align-items:center;justify-content:center;font-size:11px;flex:0 0 auto}
+  .rail .step.active{color:var(--fg);border-color:var(--line);background:var(--panel)}
+  .rail .step.active .n{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .rail .step.disabled{opacity:.4;cursor:default}
+  .side{border-right:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+  .stage{position:relative;overflow:hidden;background:#0b0e12;display:flex}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px}
+  .card .hd{color:var(--muted);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em}
+  button{font:inherit;background:var(--panel);color:var(--fg);border:1px solid var(--line);
+         border-radius:8px;padding:7px 10px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+  button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  input[type=text]{background:#0e1116;color:var(--fg);border:1px solid var(--line);
+       border-radius:8px;padding:6px 8px;font:inherit;min-width:0}
+  .muted{color:var(--muted);font-size:12px}
+  .err{color:#fca5a5;font-size:12px}
+  .typegrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .typegrid button{font-size:12px;padding:8px 6px;text-align:left}
+  .pagegroup{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px}
+  .pagegroup .hd2{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .pagegroup .hd2 .kind{font-size:10.5px;padding:1px 6px;border-radius:10px;border:1px solid var(--line);color:var(--muted)}
+  .kind.vector-curves{color:#38bdf8;border-color:#1e4a5f}
+  .kind.raster{color:var(--accent);border-color:#134e4a}
+  .gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:190px;overflow:auto}
+  .gallery .thumb{position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;cursor:pointer;background:#fff}
+  .gallery .thumb.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+  .gallery .thumb img{display:block;width:100%;height:52px;object-fit:cover}
+  .gallery .thumb .del{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border:0;
+                       border-radius:4px;font-size:10px;padding:1px 5px;cursor:pointer}
+  .gallery .thumb .badge{position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.65);
+                         color:#fff;font-size:9.5px;padding:1px 4px;border-radius:3px;overflow:hidden;
+                         text-overflow:ellipsis;white-space:nowrap}
+  canvas{position:absolute;top:0;left:0;touch-action:none}
+  kbd{background:#0e1116;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
+      padding:1px 5px;font:12px var(--mono)}
+  .hint{font-size:12px;color:var(--muted)}
+  .hint b{color:var(--fg)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;flex:1}
+  .seg button+button{border-left:1px solid var(--line)}
+  .zbadge{position:absolute;bottom:10px;left:12px;background:rgba(0,0,0,.6);border:1px solid var(--line);
+          border-radius:6px;padding:3px 8px;font:12px var(--mono);color:var(--muted)}
+  .modehelp{position:absolute;top:10px;left:12px;background:rgba(0,0,0,.6);border:1px solid var(--line);
+          border-radius:6px;padding:4px 9px;font-size:12px;color:var(--fg);max-width:60ch}
+</style>
+</head>
+<body>
+<header>
+  <h1>CV Studio</h1>
+  <span class="sub">step-by-step guided digitization — pings between this browser tab and the local <code>cvdigitize studio</code> server; nothing leaves your machine</span>
+</header>
+
+<div class="wrap">
+  <nav class="rail" id="stepRail">
+    <div class="step active" data-step="1"><span class="n">1</span> Paper &amp; sources</div>
+    <div class="step disabled" data-step="2"><span class="n">2</span> Calibrate</div>
+    <div class="step disabled" data-step="3"><span class="n">3</span> Measure</div>
+    <div class="step disabled" data-step="4"><span class="n">4</span> Extract &amp; check</div>
+    <div class="step disabled" data-step="5"><span class="n">5</span> Label &amp; save</div>
+  </nav>
+
+  <aside class="side">
+    <div class="card">
+      <div class="hd">Open a paper</div>
+      <div class="row">
+        <input id="pdfPath" type="text" placeholder="path to paper.pdf" style="flex:1">
+        <button id="openBtn" class="primary">Open</button>
+      </div>
+      <div id="openStatus" class="muted" style="margin-top:7px">no paper open</div>
+    </div>
+
+    <div class="card" id="pagesCard" style="display:none">
+      <div class="hd">Pages &amp; sources <span class="muted">(click to load)</span></div>
+      <div id="pageList" style="max-height:320px;overflow:auto"></div>
+    </div>
+
+    <div class="card" id="cropCard" style="display:none">
+      <div class="hd">Crop &amp; classify</div>
+      <div class="hint">
+        Pick the figure type, then drag a box around one real plot on the
+        canvas. Hold <kbd>Alt</kbd> and drag inside it to blank out a
+        legend/text box sitting on the axes. <kbd>Enter</kbd> or <b>Save
+        crop</b> to keep it.
+      </div>
+      <div class="typegrid" id="typeGrid" style="margin-top:9px">
+        <button data-type="single_cv">Single CV</button>
+        <button data-type="multipanel_cv">Multi-panel CV</button>
+        <button data-type="strange_cv">Strange CV</button>
+        <button data-type="other_graph">Other graph</button>
+        <button data-type="not_a_graph" style="grid-column:1/3">Not a graph</button>
+      </div>
+      <div id="cropStatus" class="muted" style="margin:8px 0">no type selected</div>
+      <div class="row">
+        <button id="saveCropBtn" class="primary" disabled>Save crop</button>
+        <button id="clearCropBtn" disabled>Clear</button>
+      </div>
+    </div>
+
+    <div class="card" id="cropsGalleryCard" style="display:none">
+      <div class="hd">Crops <span class="muted">(click to re-crop; ✕ to delete)</span></div>
+      <div id="cropsGallery" class="gallery"></div>
+    </div>
+
+    <div class="muted" style="font-size:11px">Runs against your local <code>cvdigitize studio</code> server — nothing is uploaded anywhere else.</div>
+  </aside>
+
+  <main class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="modehelp" id="modehelp"></div>
+    <div class="zbadge" id="zbadge">fit</div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ---- API ----
+async function api(method, path, body){
+  const opts = {method};
+  if(body !== undefined){ opts.headers = {"Content-Type":"application/json"}; opts.body = JSON.stringify(body); }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
+// ---- state ----
+let paper = null;          // paper stem, once a PDF is open
+let pages = [];            // [{n, kind, n_embedded, vector, sources:[name]}]
+let crops = [];            // [{name, type, source, bbox, excludeRects, parentCrop, ...}]
+let current = null;        // {kind:"source"|"crop", name, image} — what's loaded on canvas
+let mode = "crop";         // crop | pan
+let view = {z:1, ox:0, oy:0};
+let panning = false, spaceDown = false;
+let cropRect = null;           // [x0,y0,x1,y1] image px, pending
+let excludeRects = [];
+let cropDragging = null;       // "crop" | "exclude" | null
+let cropDragStart = null;
+let pendingExcludeRect = null;
+let pendingCropType = null;
+
+const stage = document.getElementById("stage");
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+function fitView(){
+  if(!current) return;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  const z = Math.min(w/current.image.naturalWidth, h/current.image.naturalHeight) * 0.96;
+  view.z = z;
+  view.ox = (w - current.image.naturalWidth*z)/2;
+  view.oy = (h - current.image.naturalHeight*z)/2;
+}
+function resizeCanvas(){ cv.width = stage.clientWidth; cv.height = stage.clientHeight; }
+function resizeCanvasIfNeeded(){ if(cv.width!==stage.clientWidth||cv.height!==stage.clientHeight) resizeCanvas(); }
+window.addEventListener("resize", () => { resizeCanvas(); redraw(); });
+
+const toScreen = (x,y) => [x*view.z + view.ox, y*view.z + view.oy];
+const toImage  = (sx,sy) => [(sx-view.ox)/view.z, (sy-view.oy)/view.z];
+function evPos(e){ const r = cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
+
+// ---- open a paper ----
+$("openBtn").addEventListener("click", openPaper);
+$("pdfPath").addEventListener("keydown", e => { if(e.key==="Enter") openPaper(); });
+
+async function openPaper(){
+  const path = $("pdfPath").value.trim();
+  if(!path) return;
+  $("openStatus").textContent = "analyzing…"; $("openStatus").className = "muted";
+  try{
+    const out = await api("POST", "/api/open_paper", {pdf_path: path});
+    paper = out.paper; pages = out.pages;
+    $("openStatus").textContent = `${paper} — ${pages.length} page(s)`;
+    $("pagesCard").style.display = ""; $("cropCard").style.display = "";
+    $("cropsGalleryCard").style.display = "";
+    renderPages();
+    await refreshCrops();
+  } catch(e){
+    $("openStatus").textContent = "Error: " + e.message; $("openStatus").className = "err";
+  }
+}
+
+function renderPages(){
+  const box = $("pageList"); box.innerHTML = "";
+  pages.forEach(pg => {
+    const d = document.createElement("div"); d.className = "pagegroup";
+    const kindLabel = pg.kind === "vector-curves" ? "vector" : pg.kind;
+    d.innerHTML = `<div class="hd2"><span>page ${pg.n}</span>
+      <span class="kind ${esc(pg.kind)}">${esc(kindLabel)}${pg.n_embedded ? ` · ${pg.n_embedded} embedded` : ""}</span></div>`;
+    const gal = document.createElement("div"); gal.className = "gallery";
+    pg.sources.forEach(name => {
+      const t = document.createElement("div"); t.className = "thumb";
+      if(current && current.kind==="source" && current.name===name) t.classList.add("active");
+      const im = document.createElement("img");
+      im.src = `/workspace/${paper}/sources/${name}`;
+      t.appendChild(im);
+      t.onclick = () => loadSource(name);
+      gal.appendChild(t);
+    });
+    d.appendChild(gal); box.appendChild(d);
+  });
+}
+
+function loadSource(name){
+  const im = new Image();
+  im.onload = () => {
+    current = {kind:"source", name, image:im};
+    cropRect = null; excludeRects = []; pendingCropType = null;
+    updateCropButtons(); fitView(); renderPages(); redraw();
+  };
+  im.src = `/workspace/${paper}/sources/${name}`;
+}
+
+function loadCropAsSource(name){
+  const im = new Image();
+  im.onload = () => {
+    current = {kind:"crop", name, image:im};
+    cropRect = null; excludeRects = []; pendingCropType = null;
+    updateCropButtons(); fitView(); renderCropsGallery(); redraw();
+  };
+  im.src = `/workspace/${paper}/crops/${name}.png`;
+}
+
+// ---- crops gallery ----
+async function refreshCrops(){
+  const out = await api("GET", `/api/list_crops?paper=${encodeURIComponent(paper)}`);
+  crops = out.crops; renderCropsGallery();
+}
+function renderCropsGallery(){
+  const box = $("cropsGallery"); box.innerHTML = "";
+  crops.forEach(c => {
+    const t = document.createElement("div"); t.className = "thumb";
+    if(current && current.kind==="crop" && current.name===c.name) t.classList.add("active");
+    const im = document.createElement("img");
+    im.src = `/workspace/${paper}/crops/${c.name}.png`;
+    t.appendChild(im);
+    const badge = document.createElement("div"); badge.className = "badge"; badge.textContent = c.type;
+    t.appendChild(badge);
+    const del = document.createElement("button"); del.className = "del"; del.textContent = "✕"; del.title = "delete";
+    del.onclick = async ev => {
+      ev.stopPropagation();
+      await api("POST", "/api/delete_crop", {paper, crop: c.name});
+      if(current && current.kind==="crop" && current.name===c.name) current = null;
+      await refreshCrops(); redraw();
+    };
+    t.appendChild(del);
+    t.onclick = () => loadCropAsSource(c.name);
+    box.appendChild(t);
+  });
+}
+
+// ---- crop type + drawing ----
+$("typeGrid").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  pendingCropType = b.dataset.type;
+  [...$("typeGrid").children].forEach(x => x.classList.toggle("on", x===b));
+  mode = "crop"; cv.style.cursor = "copy";
+  updateCropButtons();
+});
+function updateCropButtons(){
+  const has = !!cropRect && !!pendingCropType;
+  $("saveCropBtn").disabled = !has;
+  $("clearCropBtn").disabled = !cropRect;
+  if(!current) $("cropStatus").textContent = "load a page source first";
+  else if(!pendingCropType) $("cropStatus").textContent = "pick a figure type above";
+  else if(!cropRect) $("cropStatus").textContent = `type: ${pendingCropType} — now drag a box on the canvas`;
+  else $("cropStatus").textContent = `${pendingCropType}: ${Math.round(cropRect[2]-cropRect[0])}×${Math.round(cropRect[3]-cropRect[1])}px`
+    + (excludeRects.length ? `, ${excludeRects.length} masked area(s)` : "");
+}
+$("clearCropBtn").addEventListener("click", () => { cropRect=null; excludeRects=[]; updateCropButtons(); redraw(); });
+$("saveCropBtn").addEventListener("click", saveCrop);
+
+function bakeCrop(){
+  const [x0,y0,x1,y1] = cropRect.map(Math.round);
+  const w = x1-x0, h = y1-y0;
+  const off = document.createElement("canvas"); off.width=w; off.height=h;
+  const octx = off.getContext("2d");
+  octx.drawImage(current.image, x0,y0,w,h, 0,0,w,h);
+  excludeRects.forEach(r => {
+    octx.fillStyle = "#fff";
+    octx.fillRect(Math.round(r[0]-x0), Math.round(r[1]-y0), Math.round(r[2]-r[0]), Math.round(r[3]-r[1]));
+  });
+  return off.toDataURL("image/png");
+}
+async function saveCrop(){
+  if(!current || !cropRect || !pendingCropType) return;
+  const dataUrl = bakeCrop();
+  const isCrop = current.kind === "crop";
+  const body = {
+    paper, type: pendingCropType,
+    source: isCrop ? `${current.name}.png` : current.name,
+    bbox: cropRect.map(Math.round), excludeRects: excludeRects.map(r => r.map(Math.round)),
+    image: dataUrl, parentCrop: isCrop ? current.name : null,
+  };
+  $("saveCropBtn").disabled = true;
+  try{
+    await api("POST", "/api/save_crop", body);
+    cropRect = null; excludeRects = []; pendingCropType = null;
+    [...$("typeGrid").children].forEach(x => x.classList.remove("on"));
+    updateCropButtons();
+    await refreshCrops(); redraw();
+  } catch(e){
+    $("cropStatus").textContent = "Error: " + e.message; $("cropStatus").className = "err";
+  }
+}
+
+// ---- pointer interaction (crop drag + pan + zoom) ----
+cv.addEventListener("pointerdown", e => {
+  if(!current) return;
+  cv.setPointerCapture(e.pointerId);
+  const [sx,sy] = evPos(e);
+  if(mode==="pan" || spaceDown || e.button===1){ panning=true; cv._last=[sx,sy]; cv.style.cursor="grabbing"; return; }
+  cropDragging = (e.altKey && cropRect) ? "exclude" : "crop";
+  cropDragStart = toImage(sx,sy);
+  if(cropDragging==="crop"){ cropRect=null; excludeRects=[]; updateCropButtons(); }
+});
+cv.addEventListener("pointermove", e => {
+  const [sx,sy] = evPos(e);
+  if(panning){ view.ox += sx-cv._last[0]; view.oy += sy-cv._last[1]; cv._last=[sx,sy]; redraw(); return; }
+  if(cropDragging){
+    const cur = toImage(sx,sy);
+    const rect = [Math.min(cropDragStart[0],cur[0]), Math.min(cropDragStart[1],cur[1]),
+                  Math.max(cropDragStart[0],cur[0]), Math.max(cropDragStart[1],cur[1])];
+    if(cropDragging==="crop") cropRect = rect; else pendingExcludeRect = rect;
+    redraw();
+  }
+});
+cv.addEventListener("pointerup", () => {
+  panning=false; cv.style.cursor = mode==="pan"?"grab":"copy";
+  if(cropDragging==="exclude" && pendingExcludeRect){
+    const r = pendingExcludeRect; pendingExcludeRect = null;
+    if(r[2]-r[0] > 4 && r[3]-r[1] > 4) excludeRects.push(r);
+    redraw();
+  }
+  if(cropDragging==="crop" && cropRect && (cropRect[2]-cropRect[0] < 8 || cropRect[3]-cropRect[1] < 8)) cropRect = null;
+  cropDragging = null; cropDragStart = null;
+  updateCropButtons();
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const [sx,sy] = evPos(e);
+  const [ix,iy] = toImage(sx,sy);
+  const f = Math.exp(-e.deltaY*0.0012);
+  view.z = Math.max(0.05, Math.min(30, view.z*f));
+  view.ox = sx - ix*view.z; view.oy = sy - iy*view.z;
+  redraw();
+}, {passive:false});
+
+document.addEventListener("keydown", e => {
+  if(e.code==="Space"){ spaceDown=true; cv.style.cursor="grab"; }
+  if(e.key==="0"){ fitView(); redraw(); }
+  if(e.key==="Enter" && !$("saveCropBtn").disabled) saveCrop();
+});
+document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false; cv.style.cursor = mode==="pan"?"grab":"copy"; } });
+
+// ---- step rail (Step 1 only for now; later phases wire 2-5) ----
+$("stepRail").addEventListener("click", e => {
+  const s = e.target.closest(".step"); if(!s || s.classList.contains("disabled")) return;
+});
+
+// ---- rendering ----
+function redraw(){
+  resizeCanvasIfNeeded();
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!current){ $("zbadge").textContent = "fit"; return; }
+  ctx.imageSmoothingEnabled = view.z < 2;
+  ctx.drawImage(current.image, view.ox, view.oy,
+               current.image.naturalWidth*view.z, current.image.naturalHeight*view.z);
+
+  const w = cv.width, h = cv.height;
+  ctx.save();
+  if(cropRect){
+    const [x0,y0] = toScreen(cropRect[0],cropRect[1]), [x1,y1] = toScreen(cropRect[2],cropRect[3]);
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(0,0,w,y0); ctx.fillRect(0,y1,w,h-y1);
+    ctx.fillRect(0,y0,x0,y1-y0); ctx.fillRect(x1,y0,w-x1,y1-y0);
+    ctx.strokeStyle = "#2dd4bf"; ctx.lineWidth = 2; ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+    excludeRects.forEach(r => {
+      const [ex0,ey0] = toScreen(r[0],r[1]), [ex1,ey1] = toScreen(r[2],r[3]);
+      ctx.fillStyle = "rgba(244,63,94,0.35)"; ctx.fillRect(ex0,ey0,ex1-ex0,ey1-ey0);
+      ctx.strokeStyle = "#f43f5e"; ctx.lineWidth = 1.5; ctx.strokeRect(ex0,ey0,ex1-ex0,ey1-ey0);
+    });
+    if(pendingExcludeRect){
+      const [ex0,ey0] = toScreen(pendingExcludeRect[0],pendingExcludeRect[1]),
+            [ex1,ey1] = toScreen(pendingExcludeRect[2],pendingExcludeRect[3]);
+      ctx.fillStyle = "rgba(244,63,94,0.25)"; ctx.fillRect(ex0,ey0,ex1-ex0,ey1-ey0);
+      ctx.strokeStyle = "#f43f5e"; ctx.setLineDash([4,3]); ctx.strokeRect(ex0,ey0,ex1-ex0,ey1-ey0); ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
+  $("modehelp").textContent = current ? "Drag a box to crop. Alt+drag inside it to mask. Scroll = zoom, hold Space to pan." : "";
+  $("zbadge").textContent = Math.round(view.z*100)+"%";
+}
+redraw();
+</script>
+</body>
+</html>
