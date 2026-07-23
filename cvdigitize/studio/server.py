@@ -205,7 +205,10 @@ class Handler(BaseHTTPRequestHandler):
         paper, crop = body.get("paper"), body.get("crop")
         if not paper or not crop:
             raise StudioError("paper and crop are required", 400)
-        out = pipeline.autoextract_crop(self.workspace_dir, paper, crop)
+        out = pipeline.autoextract_crop(
+            self.workspace_dir, paper, crop,
+            axis_width_override=body.get("axis_width"),
+            line_width_override=body.get("line_width"))
         self._send_json(out)
 
     def _handle_trace(self, body: dict):
@@ -213,7 +216,10 @@ class Handler(BaseHTTPRequestHandler):
         guides = body.get("guides")
         if not paper or not crop or not guides:
             raise StudioError("paper, crop and guides are required", 400)
-        out = pipeline.trace_crop(self.workspace_dir, paper, crop, guides)
+        out = pipeline.trace_crop(
+            self.workspace_dir, paper, crop, guides,
+            axis_width_override=body.get("axis_width"),
+            line_width_override=body.get("line_width"))
         self._send_json(out)
 
     def _handle_accept_curves(self, body: dict):

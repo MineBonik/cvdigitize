@@ -501,6 +501,41 @@ def _axis_thickness(dark: np.ndarray, *, fixed_index: int, span: tuple[int, int]
     return float(np.min(runs)) if runs else 1.0
 
 
+def frame_border_thickness(dark: np.ndarray, frame: tuple[int, int, int, int]) -> float:
+    """Measure a detected frame's OWN border thickness (all 4 sides, worst
+    case) -- not to be assumed equal to the plotted axis lines' thickness
+    (they can differ, e.g. a thin 2px axis inside a thicker 6px outer
+    frame). Used to size the inset that keeps the frame border out of the
+    curve-ink mask (see :func:`~cvdigitize.studio.pipeline.autoextract_crop`).
+    """
+    x0, y0, x1, y1 = frame
+    top = _axis_thickness(dark, fixed_index=y0, span=(x0, x1), along_columns=True)
+    bottom = _axis_thickness(dark, fixed_index=y1, span=(x0, x1), along_columns=True)
+    left = _axis_thickness(dark, fixed_index=x0, span=(y0, y1), along_columns=False)
+    right = _axis_thickness(dark, fixed_index=x1, span=(y0, y1), along_columns=False)
+    return float(max(top, bottom, left, right))
+
+
+def frame_border_mask(shape: tuple, frame: tuple[int, int, int, int], thickness: float) -> np.ndarray:
+    """Boolean mask covering a band of ``thickness`` px straddling all 4
+    sides of ``frame`` (a ring, not a filled rectangle) -- for painting the
+    frame's own border out of the ink before tracing. Belt-and-suspenders
+    alongside ``_extract_from_frame``'s inset: an inset sized from a
+    *measured* thickness can still be a pixel or two short of a real,
+    slightly irregular/anti-aliased border, and this guarantees the border
+    can never survive into the ink mask regardless of that margin.
+    """
+    h, w = shape[:2]
+    x0, y0, x1, y1 = frame
+    t = int(np.ceil(thickness))
+    m = np.zeros((h, w), bool)
+    m[max(0, y0 - t):min(h, y0 + t + 1), max(0, x0 - t):min(w, x1 + t + 1)] = True   # top
+    m[max(0, y1 - t):min(h, y1 + t + 1), max(0, x0 - t):min(w, x1 + t + 1)] = True   # bottom
+    m[max(0, y0 - t):min(h, y1 + t + 1), max(0, x0 - t):min(w, x0 + t + 1)] = True   # left
+    m[max(0, y0 - t):min(h, y1 + t + 1), max(0, x1 - t):min(w, x1 + t + 1)] = True   # right
+    return m
+
+
 def _calib_anchor_points(calibration: dict) -> tuple:
     try:
         return (calibration["E1"]["px"], calibration["E2"]["px"],
@@ -543,8 +578,15 @@ def _median_stroke_width(mask: np.ndarray, *, min_area: int = 25) -> float:
     return float(np.median(widths)) if widths else 2.0
 
 
-def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict) -> dict:
+def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict, *,
+                                axis_width_override: float | None = None,
+                                line_width_override: float | None = None) -> dict:
     """Measure curve-line width vs. axis-line width, and the axis-exclusion band.
+
+    ``axis_width_override``/``line_width_override`` let a human correct the
+    automatic measurement (via a slider) when it's wrong -- e.g. thrown off
+    by a curve that crosses the axis many times -- without re-deriving the
+    rest of this function's math by hand.
 
     The axes are the loci THROUGH the calibration points (E1/E2 pin the
     x-axis row, j1/j2 pin the y-axis column) — precise because calibration
@@ -573,9 +615,12 @@ def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict) -> dict
     gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
     dark = gray < 220
 
-    axis_w_x = _axis_thickness(dark, fixed_index=x_axis_row, span=sample_x_span, along_columns=True)
-    axis_w_y = _axis_thickness(dark, fixed_index=y_axis_col, span=sample_y_span, along_columns=False)
-    axis_width = float(np.median([axis_w_x, axis_w_y]))
+    if axis_width_override is not None:
+        axis_width = float(axis_width_override)
+    else:
+        axis_w_x = _axis_thickness(dark, fixed_index=x_axis_row, span=sample_x_span, along_columns=True)
+        axis_w_y = _axis_thickness(dark, fixed_index=y_axis_col, span=sample_y_span, along_columns=False)
+        axis_width = float(np.median([axis_w_x, axis_w_y]))
 
     half = max(1.0, axis_width / 2.0 + 1.0)   # measured half-thickness + a small margin
     exclusion_band = {
@@ -583,9 +628,12 @@ def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict) -> dict
         "y_axis": {"x": y_axis_col, "half_width": half, "y_range": [0, h]},
     }
 
-    ink = _ink_mask(crop_rgb)
-    non_axis_ink = ink & ~exclusion_mask(crop_rgb.shape, exclusion_band)
-    line_width = round(_median_stroke_width(non_axis_ink), 2)
+    if line_width_override is not None:
+        line_width = round(float(line_width_override), 2)
+    else:
+        ink = _ink_mask(crop_rgb)
+        non_axis_ink = ink & ~exclusion_mask(crop_rgb.shape, exclusion_band)
+        line_width = round(_median_stroke_width(non_axis_ink), 2)
 
     return {
         "line_width": line_width,

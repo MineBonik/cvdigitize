@@ -414,6 +414,66 @@ def test_trace_snaps_guide_to_ink(server, tmp_path):
     assert c["fidelity"]["score"] is not None
 
 
+def test_trace_masks_frame_border_so_guide_cannot_snap_onto_it(server, tmp_path):
+    """A hand-trace guide that overshoots toward the plot's own outer frame
+    must never snap onto that border ink -- the real bug (reported live): a
+    hand-traced curve escaped along the frame border after the real ink
+    faded out near a corner, chording across empty space onto it. trace_crop
+    masks the axis + frame border out of the ink before extraction, same as
+    autoextract_crop, so the brush is structurally forbidden from ever
+    landing on either."""
+    base, _ = server
+    paper_name = "paperTraceFrame"
+    h, w = 300, 500
+    img = np.full((h, w, 3), 255, np.uint8)
+    frame_box = (20, 20, 480, 280)   # a thick 6px outer frame
+    cv2.rectangle(img, frame_box[:2], frame_box[2:], (0, 0, 0), 6)
+    axis_row, axis_col = 200, 60
+    cv2.line(img, (axis_col, axis_row), (460, axis_row), (0, 0, 0), 2)
+    cv2.line(img, (axis_col, 30), (axis_col, axis_row), (0, 0, 0), 2)
+    xs = np.arange(80, 420)   # the curve's real ink ends well short of the frame
+    ys = (axis_row - 80 * np.exp(-((xs - 180.0) ** 2) / (2 * 40.0 ** 2))).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 0, 0), -1)
+    ok, buf = cv2.imencode(".png", img)
+    data_url = "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+    pdf = str(tmp_path / f"{paper_name}.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_crop", {
+        "paper": paper_name, "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, w, h], "excludeRects": [], "image": data_url,
+    })
+    crop_name = out["crop"]
+    calibration = {
+        "E1": {"px": [axis_col, axis_row], "value": 0.0}, "E2": {"px": [440, axis_row], "value": 1.0},
+        "j1": {"px": [axis_col, axis_row], "value": -100}, "j2": {"px": [axis_col, 30], "value": 100},
+        "E_unit": "V", "E_ref": "RHE", "j_unit": "uA/cm2",
+    }
+    _post(base, "/api/save_calibration",
+         {"paper": paper_name, "crop": crop_name, "calibration": calibration})
+
+    # a guide that deliberately overshoots well past the curve's real end,
+    # running close to and roughly parallel to the frame's right border
+    guide_xs = np.linspace(85, 478, 40)
+    guide_ys = np.full_like(guide_xs, float(axis_row))
+    guides = [{"name": "hand", "radius": 15,
+              "strokes": [{"radius": 15,
+                          "pts": [[float(x), float(y)] for x, y in zip(guide_xs, guide_ys)]}]}]
+
+    status, out = _post(base, "/api/trace",
+                        {"paper": paper_name, "crop": crop_name, "guides": guides})
+    assert status == 200
+    assert out["curves"]
+    pts = np.asarray(out["curves"][0]["xy_px"])
+    x0f, y0f, x1f, y1f = frame_box
+    margin = 8
+    on_border = ((pts[:, 0] <= x0f + margin) | (pts[:, 0] >= x1f - margin)
+                | (pts[:, 1] <= y0f + margin) | (pts[:, 1] >= y1f - margin))
+    assert not on_border.any(), "trace must never snap onto the frame's own border ink"
+
+
 def test_accept_curves_persists_onto_crop(server, tmp_path):
     base, workspace = server
     crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperAccept")

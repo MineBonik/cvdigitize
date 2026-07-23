@@ -94,7 +94,7 @@
   .labelrow{background:#0e1116;border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px}
   .labelrow .row{margin-bottom:6px}
   .labelrow input[type=text]{width:100%}
-  .labelrow .lbl{font-size:11px;color:var(--muted);width:52px;flex:0 0 auto}
+  .lbl{font-size:11px;color:var(--muted);width:52px;flex:0 0 auto}
 </style>
 </head>
 <body>
@@ -196,6 +196,24 @@
           itself is never traced as data.
         </div>
         <div id="measureResult" class="muted" style="margin-top:9px"></div>
+        <div id="measureSliders" style="display:none;margin-top:10px">
+          <div class="row">
+            <span class="lbl">axis width</span>
+            <input id="axisWidthRange" type="range" min="0.5" max="20" step="0.1" style="flex:1">
+            <span id="axisWidthVal" class="muted" style="width:52px;text-align:right">&nbsp;</span>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <span class="lbl">line width</span>
+            <input id="lineWidthRange" type="range" min="0.5" max="30" step="0.1" style="flex:1">
+            <span id="lineWidthVal" class="muted" style="width:52px;text-align:right">&nbsp;</span>
+          </div>
+          <div class="hint" style="margin-top:6px">
+            Drag to correct a bad automatic reading (e.g. a curve that
+            crosses the axis many times can throw the auto-measurement off)
+            — this reshapes the red exclusion band and feeds the brush size
+            used for extraction/hand-trace.
+          </div>
+        </div>
         <div class="row" style="margin-top:9px">
           <button id="toExtractBtn" class="primary" disabled>Continue to extract &rarr;</button>
         </div>
@@ -448,6 +466,7 @@ function setActiveCrop(name){
                    suggested_brush: Math.round(1.8*meta.lineWidth*10)/10, exclusion_band: null};
     $("measureResult").innerHTML = `line width <b>${meta.lineWidth}px</b> &middot; `
       + `axis width <b>${meta.axisWidth}px</b> (from a previous session — Measure again to redraw the band)`;
+    syncMeasureSliders();
     $("toExtractBtn").disabled = false;
   }
   if(meta && meta.curves && meta.curves.length){
@@ -472,6 +491,7 @@ function resetMeasureAndExtract(){
   $("curveResults").innerHTML = ""; $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
   $("traceCard").style.display = "none"; $("extractCard").style.display = "";
   $("labelRows").innerHTML = ""; $("saveStatus").textContent = "";
+  $("measureSliders").style.display = "none";
   updateRailEnabled();
 }
 function updateRailEnabled(){
@@ -656,14 +676,25 @@ $("saveCalibBtn").addEventListener("click", saveCalibration);
 }));
 
 // ---- step 3: measure ----
+function refreshMeasureResultText(){
+  $("measureResult").innerHTML = `line width <b>${measurement.line_width}px</b> &middot; `
+    + `axis width <b>${measurement.axis_width}px</b> &middot; `
+    + `suggested brush <b>${measurement.suggested_brush}px</b>`;
+}
+function syncMeasureSliders(){
+  $("axisWidthRange").value = measurement.axis_width;
+  $("axisWidthVal").textContent = measurement.axis_width + "px";
+  $("lineWidthRange").value = measurement.line_width;
+  $("lineWidthVal").textContent = measurement.line_width + "px";
+  $("measureSliders").style.display = "";
+}
 async function measureCrop(){
   if(!activeCrop) return;
   $("measureResult").textContent = "measuring…"; $("measureResult").className = "muted";
   try{
     measurement = await api("POST", "/api/measure", {paper, crop: activeCrop});
-    $("measureResult").innerHTML = `line width <b>${measurement.line_width}px</b> &middot; `
-      + `axis width <b>${measurement.axis_width}px</b> &middot; `
-      + `suggested brush <b>${measurement.suggested_brush}px</b>`;
+    refreshMeasureResultText();
+    syncMeasureSliders();
     $("toExtractBtn").disabled = false;
     updateRailEnabled();
     redraw();
@@ -674,6 +705,26 @@ async function measureCrop(){
 $("measureBtn").addEventListener("click", measureCrop);
 $("backToCalibBtn").addEventListener("click", () => setStep(2));
 $("toExtractBtn").addEventListener("click", () => setStep(4));
+$("axisWidthRange").addEventListener("input", e => {
+  if(!measurement) return;
+  measurement.axis_width = Math.round(parseFloat(e.target.value)*10)/10;
+  $("axisWidthVal").textContent = measurement.axis_width + "px";
+  // recompute the exclusion band's half-width client-side so the red
+  // overlay updates live, matching what the next server call will use
+  const half = Math.max(1.0, measurement.axis_width/2.0 + 1.0);
+  if(measurement.exclusion_band){
+    measurement.exclusion_band.x_axis.half_width = half;
+    measurement.exclusion_band.y_axis.half_width = half;
+  }
+  redraw();
+});
+$("lineWidthRange").addEventListener("input", e => {
+  if(!measurement) return;
+  measurement.line_width = Math.round(parseFloat(e.target.value)*10)/10;
+  measurement.suggested_brush = Math.round(Math.max(3.0, 1.8*measurement.line_width)*100)/100;
+  $("lineWidthVal").textContent = measurement.line_width + "px";
+  refreshMeasureResultText();
+});
 
 // ---- step 4: extract & check ----
 function renderCurveResults(curves){
@@ -701,8 +752,10 @@ async function autoExtract(){
   $("extractStatus").textContent = "extracting…"; $("extractStatus").className = "muted";
   $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
   try{
-    const out = await api("POST", "/api/autoextract", {paper, crop: activeCrop});
+    const out = await api("POST", "/api/autoextract", {paper, crop: activeCrop,
+      axis_width: measurement && measurement.axis_width, line_width: measurement && measurement.line_width});
     resultCurves = out.curves; measurement = out.measurement || measurement;
+    syncMeasureSliders();
     renderCurveResults(resultCurves); renderLabelRows();
     const worst = resultCurves.reduce((m,c) =>
       Math.min(m, (c.fidelity && c.fidelity.score!=null) ? c.fidelity.score : 100), 100);
@@ -785,8 +838,10 @@ async function extractFromGuides(){
   if(!guides.length){ $("extractStatus").textContent = "draw at least one stroke first"; return; }
   $("extractStatus").textContent = "extracting from guides…"; $("extractStatus").className = "muted";
   try{
-    const out = await api("POST", "/api/trace", {paper, crop: activeCrop, guides});
+    const out = await api("POST", "/api/trace", {paper, crop: activeCrop, guides,
+      axis_width: measurement && measurement.axis_width, line_width: measurement && measurement.line_width});
     resultCurves = out.curves;
+    measurement = out.measurement || measurement;
     traceMode = false; $("traceCard").style.display = "none"; $("extractCard").style.display = "";
     mode = "pan"; cv.style.cursor = "grab";
     renderCurveResults(resultCurves); renderLabelRows();

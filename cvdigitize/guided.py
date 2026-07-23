@@ -83,15 +83,39 @@ def split_strokes(points, jump_factor: float = 5.0, min_abs_jump: float = 15.0
 
 def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float
                  ) -> np.ndarray:
-    """Densify one stroke and snap each position to the nearest ink pixel."""
+    """Densify one stroke and snap each position to the CENTER of the ink's
+    local width, not just its nearest edge.
+
+    Snapping to the single nearest ink pixel hugs whichever side of a thick
+    stroke the rough guide happened to be drawn closer to (visibly rough on
+    a wide peak) -- there is no reason to trust the guide's distance from
+    the stroke's far edge over its near one. Instead: estimate the local
+    travel direction, then look at how far the nearby ink extends to each
+    side along the PERPENDICULAR to that direction, and place the point at
+    the midpoint of that span. That's the standard centerline definition
+    (same idea as skeletonizing a thick stroke), computed directly from the
+    ink actually near this guide point rather than a global skeleton, so it
+    keeps working through junctions/crossings a real skeleton would break at.
+    """
     dense = _densify(stroke, step=2.0)
+    n = len(dense)
     snapped = []
-    for g in dense:
+    for i, g in enumerate(dense):
         near = tree.query_ball_point(g, radius)
         if not near:
             continue
         cand = ink_pts[near]
-        snapped.append(cand[np.argmin(np.hypot(cand[:, 0] - g[0], cand[:, 1] - g[1]))])
+        i0, i1 = max(0, i - 1), min(n - 1, i + 1)
+        tangent = dense[i1] - dense[i0]
+        tnorm = np.hypot(*tangent)
+        if tnorm < 1e-6:
+            snapped.append(cand[np.argmin(np.hypot(cand[:, 0] - g[0], cand[:, 1] - g[1]))])
+            continue
+        tangent = tangent / tnorm
+        normal = np.array([-tangent[1], tangent[0]])
+        offsets = (cand - g) @ normal
+        center_offset = (offsets.min() + offsets.max()) / 2.0
+        snapped.append(g + normal * center_offset)
     return np.asarray(snapped) if snapped else np.empty((0, 2))
 
 
