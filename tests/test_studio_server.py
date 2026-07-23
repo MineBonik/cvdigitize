@@ -396,6 +396,38 @@ def test_autoextract_missing_crop_is_404(server, tmp_path):
     assert "error" in out
 
 
+def test_recenter_returns_valid_curves_for_the_straighten_button(server, tmp_path):
+    base, _ = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperRecenter")
+
+    status, out = _post(base, "/api/autoextract", {"paper": "paperRecenter", "crop": crop_name})
+    assert status == 200
+    curves = out["curves"]
+    assert curves
+
+    status, out = _post(base, "/api/recenter",
+                        {"paper": "paperRecenter", "crop": crop_name, "curves": curves})
+    assert status == 200
+    assert out["curves"]
+    assert "measurement" in out
+    for c in out["curves"]:
+        assert len(c["xy_px"]) == len(c["xy_real"])
+        assert c["fidelity"]["score"] is not None
+
+
+def test_recenter_missing_crop_is_404(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperRecenterNo.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/recenter", {
+        "paper": "paperRecenterNo", "crop": "nope_crop1",
+        "curves": [{"name": "x", "xy_px": [[0, 0], [1, 1]]}],
+    })
+    assert status == 404
+    assert "error" in out
+
+
 def test_trace_snaps_guide_to_ink(server, tmp_path):
     base, _ = server
     crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperTrace")
