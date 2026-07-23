@@ -12,6 +12,7 @@ from cvdigitize.raster_extract import (
     _merge_boxes, locate_plot_regions, extract_scan_curves,
     _extract_from_frame, extract_from_cropped_image,
     _axis_thickness, measure_line_and_axis_width,
+    strip_border_fill_mask,
 )
 
 
@@ -181,6 +182,46 @@ def test_extract_from_frame_survives_a_degenerate_frame():
 
     result = extract_from_cropped_image(img)
     assert "polyline_px" in result
+
+
+def test_strip_border_fill_mask_removes_margin_not_curve():
+    """A solid black margin/background bleeding in from a crop's edges (e.g.
+    a scan's page background) must be stripped, but a real thin curve
+    stroke that merely touches the border at one point must survive.
+
+    Reproduces a real bug: left uncleaned, the margin becomes the biggest
+    connected dark component, and _mask_to_curve's "keep components >= 5%
+    of the biggest" filter then discards the real (much smaller) curve
+    entirely -- extraction returned ZERO curves on a curve plainly visible
+    in the crop.
+    """
+    h, w = 400, 500
+    img = np.zeros((h, w, 3), np.uint8)
+    margin = 60
+    img[margin:h - margin, margin:w - margin] = 255
+    axis_row, axis_col = 300, 100
+    cv2.line(img, (axis_col, 80), (axis_col, axis_row), (0, 0, 0), 2)
+    cv2.line(img, (axis_col, axis_row), (420, axis_row), (0, 0, 0), 2)
+    xs = np.arange(120, 400)
+    ys = (axis_row - 80 * np.exp(-((xs - 250.0) ** 2) / (2 * 40.0 ** 2))).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 0, 0), -1)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    frame = (25, 20, 475, 380)   # the 5% margin fallback (detect_frame_bbox finds nothing here)
+    assert detect_frame_bbox(gray) is None
+
+    uncleaned = _extract_from_frame(rgb, frame, value_thresh=0.55, frame_inset_px=4, max_spur_len=15)
+    assert len(uncleaned["curves"]) == 0, "sanity check: this really is the failure case"
+
+    fill = strip_border_fill_mask(gray)
+    assert fill.any()
+    cleaned = rgb.copy()
+    cleaned[fill] = 255
+    result = _extract_from_frame(cleaned, frame, value_thresh=0.55, frame_inset_px=4, max_spur_len=15)
+    assert len(result["curves"]) >= 1
+    assert len(result["curves"][0]["polyline_px"]) > 200
 
 
 def test_detect_all_frames_finds_two_stacked_panels():

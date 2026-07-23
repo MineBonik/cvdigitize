@@ -536,6 +536,41 @@ def frame_border_mask(shape: tuple, frame: tuple[int, int, int, int], thickness:
     return m
 
 
+def strip_border_fill_mask(gray: np.ndarray, *, dark_thresh: int = 220,
+                          max_stroke_width: float = 9.0) -> np.ndarray:
+    """Boolean mask of dark regions that are both (a) connected to the
+    image's own outer border and (b) too "thick" (a filled blob, not a
+    stroke) to be real curve ink -- e.g. a scan's solid black page
+    background bleeding into a crop's edges.
+
+    Left alone, that fill becomes the single biggest connected component
+    once ``mask_dark_curve`` runs, and downstream keep-filters that measure
+    "at least 5% the size of the biggest component" (meant to keep every
+    fragment of the SAME curve while dropping noise) then discard the real
+    curve outright -- it's nowhere near 5% the size of a page-margin fill.
+    A real curve merely touching the border at one point survives this
+    (it's thin, so it fails the thickness test); only genuinely filled
+    regions are removed.
+    """
+    dark = (gray < dark_thresh).astype(np.uint8)
+    h, w = dark.shape
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    out = np.zeros((h, w), bool)
+    for i in range(1, n):
+        x0 = stats[i, cv2.CC_STAT_LEFT]
+        y0 = stats[i, cv2.CC_STAT_TOP]
+        cw = stats[i, cv2.CC_STAT_WIDTH]
+        ch = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < 25 or not (x0 <= 0 or y0 <= 0 or x0 + cw >= w or y0 + ch >= h):
+            continue
+        comp = labels == i
+        skel_len = int(skeletonize_curve(comp).sum())
+        if skel_len == 0 or area / skel_len > max_stroke_width:
+            out |= comp
+    return out
+
+
 def _calib_anchor_points(calibration: dict) -> tuple:
     try:
         return (calibration["E1"]["px"], calibration["E2"]["px"],

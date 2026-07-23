@@ -18,7 +18,8 @@ from ..raster_extract import (_extract_from_frame, crop_tick_labels,
                               detect_axis_ticks, detect_frame_bbox,
                               exclusion_mask, find_image_regions,
                               frame_border_mask, frame_border_thickness,
-                              measure_line_and_axis_width, render_region)
+                              measure_line_and_axis_width, render_region,
+                              strip_border_fill_mask)
 from . import workspace as ws
 
 
@@ -119,8 +120,27 @@ def autocalibrate_crop(workspace_dir: str, paper: str, crop: str) -> dict:
     return {"points": points, "labelCrops": label_urls, "frame": list(frame)}
 
 
+def _clean_border_fill(img: np.ndarray) -> np.ndarray:
+    """Paint out any solid dark margin/background bleeding in from the
+    crop's own outer border (e.g. a scan's black page background). Left in,
+    it becomes the single biggest connected dark component, and the
+    downstream "keep components >= 5% of the biggest" filter (meant to keep
+    every fragment of the SAME curve, drop noise) then discards the real
+    curve outright -- a real bug, reported live as "no curve found" on a
+    curve plainly visible in the crop.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    fill = strip_border_fill_mask(gray)
+    if not fill.any():
+        return img
+    cleaned = img.copy()
+    cleaned[fill] = 255
+    return cleaned
+
+
 def _load_crop_and_calibration(workspace_dir: str, paper: str, crop: str):
     img = _require_crop_image(workspace_dir, paper, crop)
+    img = _clean_border_fill(img)
     meta = ws.load_crop_meta(workspace_dir, paper, crop)
     calibration = meta.get("calibration") if meta else None
     if not calibration:
