@@ -120,6 +120,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_save_crop(body)
             elif path == "/api/delete_crop":
                 self._handle_delete_crop(body)
+            elif path == "/api/autocalibrate":
+                self._handle_autocalibrate(body)
+            elif path == "/api/save_calibration":
+                self._handle_save_calibration(body)
             else:
                 self._send_error_json("not found", 404)
         except StudioError as e:
@@ -162,6 +166,21 @@ class Handler(BaseHTTPRequestHandler):
             raise StudioError("paper and crop are required", 400)
         ok = ws.delete_crop(self.workspace_dir, paper, crop)
         self._send_json({"ok": ok})
+
+    def _handle_autocalibrate(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        if not paper or not crop:
+            raise StudioError("paper and crop are required", 400)
+        out = pipeline.autocalibrate_crop(self.workspace_dir, paper, crop)
+        self._send_json(out)
+
+    def _handle_save_calibration(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        calibration = body.get("calibration")
+        if not paper or not crop or calibration is None:
+            raise StudioError("paper, crop and calibration are required", 400)
+        ws.set_crop_calibration(self.workspace_dir, paper, crop, calibration)
+        self._send_json({"ok": True})
 
 
 def make_server(workspace_dir: str, port: int = 0) -> ThreadingHTTPServer:

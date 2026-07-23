@@ -170,6 +170,20 @@ def save_crop_meta(workspace: str, stem: str, crop: str, meta: dict) -> None:
         json.dump(meta, f, indent=2)
 
 
+def set_crop_calibration(workspace: str, stem: str, crop: str, calibration: dict) -> dict:
+    """Read-modify-write just the calibration field (Step 2: /api/save_calibration)."""
+    path = _crop_json_path(workspace, stem, crop)
+    with _LOCK:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{stem}/{crop}")
+        with open(path, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["calibration"] = calibration
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    return meta
+
+
 def load_crop_image(workspace: str, stem: str, crop: str) -> np.ndarray | None:
     path = _crop_png_path(workspace, stem, crop)
     if not os.path.exists(path):

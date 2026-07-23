@@ -189,3 +189,93 @@ def test_unknown_route_is_404(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(base + "/api/does_not_exist")
     assert exc.value.code == 404
+
+
+def _framed_axes_data_url() -> str:
+    """A crop with a real axes frame + evenly-spaced ticks (same synthetic
+    pattern as tests/test_raster_extract.py's detect_axis_ticks test), so
+    detect_frame_bbox/detect_axis_ticks reliably find something to report."""
+    img = np.full((300, 400, 3), 255, np.uint8)
+    box = (60, 40, 340, 240)
+    cv2.rectangle(img, box[:2], box[2:], (0, 0, 0), 2)
+    x0, y0, x1, y1 = box
+    for f in (0.1, 0.3, 0.5, 0.7, 0.9):
+        x = x0 + int((x1 - x0) * f)
+        cv2.line(img, (x, y1 + 3), (x, y1 + 8), (0, 0, 0), 1)
+    for f in (0.15, 0.5, 0.85):
+        y = y0 + int((y1 - y0) * f)
+        cv2.line(img, (x0 - 8, y), (x0 - 3, y), (0, 0, 0), 1)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _seed_paper_with_crop(base, tmp_path, paper_name="paperCal"):
+    pdf = str(tmp_path / f"{paper_name}.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_crop", {
+        "paper": paper_name, "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, 400, 300], "excludeRects": [], "image": _framed_axes_data_url(),
+    })
+    assert status == 200
+    return out["crop"]
+
+
+def test_autocalibrate_finds_frame_and_tick_positions(server, tmp_path):
+    base, _ = server
+    crop_name = _seed_paper_with_crop(base, tmp_path)
+
+    status, out = _post(base, "/api/autocalibrate", {"paper": "paperCal", "crop": crop_name})
+    assert status == 200
+    for anchor in ("E1", "E2", "j1", "j2"):
+        assert anchor in out["points"]
+        assert len(out["points"][anchor]) == 2
+        assert anchor in out["labelCrops"]
+        assert out["labelCrops"][anchor].startswith("data:image/png;base64,")
+    assert len(out["frame"]) == 4
+
+
+def test_autocalibrate_missing_crop_is_404(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperNo.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/autocalibrate", {"paper": "paperNo", "crop": "nope_crop1"})
+    assert status == 404
+    assert "error" in out
+
+
+def test_save_calibration_persists_into_crop_json(server, tmp_path):
+    base, workspace = server
+    crop_name = _seed_paper_with_crop(base, tmp_path, paper_name="paperCal2")
+    calibration = {
+        "E1": {"px": [70, 200], "value": 0.0}, "E2": {"px": [330, 200], "value": 1.0},
+        "j1": {"px": [60, 70], "value": 100}, "j2": {"px": [60, 210], "value": -100},
+        "E_unit": "V", "E_ref": "RHE", "j_unit": "uA/cm2",
+    }
+    status, out = _post(base, "/api/save_calibration",
+                        {"paper": "paperCal2", "crop": crop_name, "calibration": calibration})
+    assert status == 200
+    assert out["ok"] is True
+
+    json_path = os.path.join(workspace, "paperCal2", "crops", crop_name + ".json")
+    with open(json_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["calibration"] == calibration
+    # the rest of the crop's metadata must survive the read-modify-write
+    assert meta["type"] == "single_cv"
+
+    status, out = _get(base, "/api/list_crops?paper=paperCal2")
+    assert out["crops"][0]["calibration"] == calibration
+
+
+def test_save_calibration_missing_crop_is_404(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperNo2.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_calibration",
+                        {"paper": "paperNo2", "crop": "nope_crop1", "calibration": {}})
+    assert status == 404
+    assert "error" in out
