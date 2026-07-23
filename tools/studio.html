@@ -91,6 +91,10 @@
   .fidbadge.good{background:#2ecc71}
   .fidbadge.fair{background:#f1c40f}
   .fidbadge.poor{background:#e74c3c;color:#fff}
+  .labelrow{background:#0e1116;border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px}
+  .labelrow .row{margin-bottom:6px}
+  .labelrow input[type=text]{width:100%}
+  .labelrow .lbl{font-size:11px;color:var(--muted);width:52px;flex:0 0 auto}
 </style>
 </head>
 <body>
@@ -244,6 +248,27 @@
       </div>
     </div>
 
+    <div id="step5Cards" style="display:none">
+      <div class="card" id="labelCard">
+        <div class="hd">Label &amp; save</div>
+        <div class="row">
+          <button id="backToExtractFromLabelBtn">&larr; back to extract</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          Name each curve (e.g. &ldquo;Pt(111) 0.1 M HClO&#8323;&rdquo;) and a
+          figure/panel tag &mdash; defaults to this crop, editable to an
+          echemdb style like <code>f2a</code>. <b>Save</b> writes
+          CSV + JSON + YAML into <code>curves/</code> and refreshes the
+          paper's <code>index.html</code>.
+        </div>
+        <div id="labelRows" style="margin-top:9px"></div>
+        <div class="row" style="margin-top:9px">
+          <button id="saveLabeledCurvesBtn" class="primary">Save</button>
+        </div>
+        <div id="saveStatus" class="muted" style="margin-top:7px"></div>
+      </div>
+    </div>
+
     <div class="muted" style="font-size:11px">Runs against your local <code>cvdigitize studio</code> server — nothing is uploaded anywhere else.</div>
   </aside>
 
@@ -342,6 +367,12 @@ async function openPaper(){
     $("cropsGalleryCard").style.display = "";
     renderPages();
     await refreshCrops();
+    if(out.last_crop && crops.some(c => c.name===out.last_crop)){
+      await loadCropAsSource(out.last_crop);
+      const resumeStep = Math.max(1, Math.min(5, out.last_step || 1));
+      setStep(resumeStep);
+      $("openStatus").textContent += ` — resumed at ${out.last_crop}, step ${resumeStep}`;
+    }
   } catch(e){
     $("openStatus").textContent = "Error: " + e.message; $("openStatus").className = "err";
   }
@@ -380,14 +411,17 @@ function loadSource(name){
 }
 
 function loadCropAsSource(name){
-  const im = new Image();
-  im.onload = () => {
-    current = {kind:"crop", name, image:im};
-    cropRect = null; excludeRects = []; pendingCropType = null;
-    setActiveCrop(name);
-    updateCropButtons(); fitView(); renderCropsGallery(); redraw();
-  };
-  im.src = `/workspace/${paper}/crops/${name}.png`;
+  return new Promise(resolve => {
+    const im = new Image();
+    im.onload = () => {
+      current = {kind:"crop", name, image:im};
+      cropRect = null; excludeRects = []; pendingCropType = null;
+      setActiveCrop(name);
+      updateCropButtons(); fitView(); renderCropsGallery(); redraw();
+      resolve();
+    };
+    im.src = `/workspace/${paper}/crops/${name}.png`;
+  });
 }
 
 function setActiveCrop(name){
@@ -402,6 +436,22 @@ function setActiveCrop(name){
   $("calibCropName").textContent = "— " + name;
   $("calibStatus").textContent = "";
   resetMeasureAndExtract();
+  // resume: reconstruct just enough from what the crop already persisted so
+  // Steps 3-5 are reachable again without re-running Measure/Extract (the
+  // exclusion band itself isn't persisted -- re-run Measure to see it drawn)
+  if(meta && meta.lineWidth!=null){
+    measurement = {line_width: meta.lineWidth, axis_width: meta.axisWidth,
+                   suggested_brush: Math.round(1.8*meta.lineWidth*10)/10, exclusion_band: null};
+    $("measureResult").innerHTML = `line width <b>${meta.lineWidth}px</b> &middot; `
+      + `axis width <b>${meta.axisWidth}px</b> (from a previous session — Measure again to redraw the band)`;
+    $("toExtractBtn").disabled = false;
+  }
+  if(meta && meta.curves && meta.curves.length){
+    resultCurves = JSON.parse(JSON.stringify(meta.curves));
+    renderCurveResults(resultCurves); renderLabelRows();
+    $("extractStatus").textContent = `${resultCurves.length} curve(s) accepted in a previous session`;
+    $("acceptCurvesBtn").disabled = false; $("handTraceBtn").disabled = false;
+  }
   updateRailEnabled(); renderCalibGrid();
 }
 function clearActiveCrop(){
@@ -417,11 +467,14 @@ function resetMeasureAndExtract(){
   $("extractStatus").textContent = ""; $("acceptStatus").textContent = "";
   $("curveResults").innerHTML = ""; $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
   $("traceCard").style.display = "none"; $("extractCard").style.display = "";
+  $("labelRows").innerHTML = ""; $("saveStatus").textContent = "";
+  updateRailEnabled();
 }
 function updateRailEnabled(){
   document.querySelector('.step[data-step="2"]').classList.toggle("disabled", !activeCrop);
   document.querySelector('.step[data-step="3"]').classList.toggle("disabled", !calibSaved);
   document.querySelector('.step[data-step="4"]').classList.toggle("disabled", !measurement);
+  document.querySelector('.step[data-step="5"]').classList.toggle("disabled", !resultCurves.length);
 }
 
 // ---- crops gallery ----
@@ -646,7 +699,7 @@ async function autoExtract(){
   try{
     const out = await api("POST", "/api/autoextract", {paper, crop: activeCrop});
     resultCurves = out.curves; measurement = out.measurement || measurement;
-    renderCurveResults(resultCurves);
+    renderCurveResults(resultCurves); renderLabelRows();
     const worst = resultCurves.reduce((m,c) =>
       Math.min(m, (c.fidelity && c.fidelity.score!=null) ? c.fidelity.score : 100), 100);
     $("extractStatus").textContent = resultCurves.length
@@ -654,6 +707,7 @@ async function autoExtract(){
       : "no curve found automatically — try Hand-trace";
     $("acceptCurvesBtn").disabled = resultCurves.length===0;
     $("handTraceBtn").disabled = false;
+    updateRailEnabled();
     redraw();
   } catch(e){
     $("extractStatus").textContent = "Error: " + e.message; $("extractStatus").className = "err";
@@ -667,9 +721,9 @@ async function acceptCurves(){
   $("acceptCurvesBtn").disabled = true;
   try{
     await api("POST", "/api/accept_curves", {paper, crop: activeCrop, curves: resultCurves});
-    $("acceptStatus").textContent = `accepted ${resultCurves.length} curve(s) — Step 5 (label & save) lands in a later phase`;
-    $("acceptStatus").className = "muted";
+    $("acceptStatus").textContent = `accepted ${resultCurves.length} curve(s)`; $("acceptStatus").className = "muted";
     await refreshCrops();
+    updateRailEnabled(); setStep(5);
   } catch(e){
     $("acceptStatus").textContent = "Error: " + e.message; $("acceptStatus").className = "err";
   }
@@ -731,9 +785,10 @@ async function extractFromGuides(){
     resultCurves = out.curves;
     traceMode = false; $("traceCard").style.display = "none"; $("extractCard").style.display = "";
     mode = "pan"; cv.style.cursor = "grab";
-    renderCurveResults(resultCurves);
+    renderCurveResults(resultCurves); renderLabelRows();
     $("extractStatus").textContent = `${resultCurves.length} curve(s) from your guides`;
     $("acceptCurvesBtn").disabled = resultCurves.length===0;
+    updateRailEnabled();
     redraw();
   } catch(e){
     $("extractStatus").textContent = "Error: " + e.message; $("extractStatus").className = "err";
@@ -741,22 +796,65 @@ async function extractFromGuides(){
 }
 $("extractFromGuidesBtn").addEventListener("click", extractFromGuides);
 
+// ---- step 5: label & save ----
+function renderLabelRows(){
+  const box = $("labelRows"); box.innerHTML = "";
+  resultCurves.forEach((c,i) => {
+    if(c.label === undefined) c.label = c.name;
+    if(c.figtag === undefined) c.figtag = "";
+    const row = document.createElement("div"); row.className = "labelrow";
+    row.innerHTML = `
+      <div class="row"><span class="lbl">label</span>
+        <input type="text" data-i="${i}" data-field="label" value="${esc(c.label)}"
+               placeholder="e.g. Pt(111) 0.1 M HClO4"></div>
+      <div class="row"><span class="lbl">figtag</span>
+        <input type="text" data-i="${i}" data-field="figtag" value="${esc(c.figtag)}"
+               placeholder="crop{N} (default) or e.g. f2a"></div>`;
+    box.appendChild(row);
+  });
+}
+$("labelRows").addEventListener("input", e => {
+  const inp = e.target.closest("input[data-i]"); if(!inp) return;
+  resultCurves[+inp.dataset.i][inp.dataset.field] = inp.value;
+});
+async function saveLabeledCurves(){
+  if(!activeCrop || !resultCurves.length) return;
+  const payload = resultCurves.map(c => ({
+    name: c.name, label: (c.label || c.name).trim() || c.name,
+    figtag: (c.figtag || "").trim(), xy_real: c.xy_real,
+  }));
+  $("saveLabeledCurvesBtn").disabled = true;
+  $("saveStatus").textContent = "saving…"; $("saveStatus").className = "muted";
+  try{
+    const out = await api("POST", "/api/save_curves", {paper, crop: activeCrop, curves: payload});
+    $("saveStatus").innerHTML = `saved ${out.written.length} file set(s):<br>`
+      + out.written.map(w => `<code>${esc(w.csv)}</code>`).join("<br>");
+  } catch(e){
+    $("saveStatus").textContent = "Error: " + e.message; $("saveStatus").className = "err";
+  }
+  $("saveLabeledCurvesBtn").disabled = false;
+}
+$("saveLabeledCurvesBtn").addEventListener("click", saveLabeledCurves);
+$("backToExtractFromLabelBtn").addEventListener("click", () => setStep(4));
+
 // ---- step rail ----
 function setStep(n){
   if(n===2 && !activeCrop) return;
   if(n===3 && !calibSaved) return;
   if(n===4 && !measurement) return;
-  if(n>=5) return;   // wired up in G6
+  if(n===5 && !resultCurves.length) return;
   activeStep = n;
   [...$("stepRail").children].forEach(el => el.classList.toggle("active", +el.dataset.step===n));
   $("step1Cards").style.display = n===1 ? "" : "none";
   $("step2Cards").style.display = n===2 ? "" : "none";
   $("step3Cards").style.display = n===3 ? "" : "none";
   $("step4Cards").style.display = n===4 ? "" : "none";
+  $("step5Cards").style.display = n===5 ? "" : "none";
   mode = n===2 ? "calib" : (n===4 && traceMode ? "trace" : (n===1 ? "crop" : "pan"));
   cv.style.cursor = mode==="calib" ? "cell" : mode==="trace" ? "crosshair" : mode==="crop" ? "copy" : "grab";
   if(n===2) renderCalibGrid();
   if(n===4) renderTraceCurveList();
+  if(n===5) renderLabelRows();
   redraw();
 }
 $("stepRail").addEventListener("click", e => {
@@ -894,7 +992,7 @@ function redraw(){
       ctx.font = "12px sans-serif"; ctx.fillText(k, x+9, y-4);
     });
   }
-  if((activeStep===3 || activeStep===4) && measurement){
+  if((activeStep===3 || activeStep===4) && measurement && measurement.exclusion_band){
     ctx.fillStyle = "rgba(244,63,94,0.30)";
     const xa = measurement.exclusion_band.x_axis;
     let [x0,y0] = toScreen(xa.x_range[0], xa.y - xa.half_width);

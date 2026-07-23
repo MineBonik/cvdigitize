@@ -132,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_trace(body)
             elif path == "/api/accept_curves":
                 self._handle_accept_curves(body)
+            elif path == "/api/save_curves":
+                self._handle_save_curves(body)
             else:
                 self._send_error_json("not found", 404)
         except StudioError as e:
@@ -152,6 +154,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({
             "paper": analysis["paper"],
             "pages": analysis["pages"],
+            "last_crop": analysis.get("last_crop"),
+            "last_step": analysis.get("last_step", 1),
         })
 
     def _handle_save_crop(self, body: dict):
@@ -219,6 +223,14 @@ class Handler(BaseHTTPRequestHandler):
             raise StudioError("paper, crop and curves are required", 400)
         pipeline.accept_curves(self.workspace_dir, paper, crop, curves)
         self._send_json({"ok": True})
+
+    def _handle_save_curves(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        curves = body.get("curves")
+        if not paper or not crop or not curves:
+            raise StudioError("paper, crop and a non-empty curves list are required", 400)
+        out = pipeline.save_curves(self.workspace_dir, paper, crop, curves)
+        self._send_json(out)
 
 
 def make_server(workspace_dir: str, port: int = 0) -> ThreadingHTTPServer:

@@ -410,3 +410,85 @@ def test_accept_curves_persists_onto_crop(server, tmp_path):
 
     status, out = _get(base, "/api/list_crops?paper=paperAccept")
     assert out["crops"][0]["curves"] == curves
+
+
+# --------------------------------------------------------------------------- #
+# G6: save_curves (echemdb naming) + resume
+# --------------------------------------------------------------------------- #
+def test_save_curves_writes_datapackage_with_echemdb_naming(server, tmp_path):
+    base, workspace = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperSave")
+
+    curves = [
+        {"name": "dark", "label": "Pt(111) 0.1 M HClO4",
+         "xy_real": [[0.0, -100.0], [0.5, 0.0], [1.0, 100.0]]},
+        {"name": "red", "figtag": "f2a", "label": "red",
+         "xy_real": [[0.0, 50.0], [1.0, -50.0]]},
+    ]
+    status, out = _post(base, "/api/save_curves",
+                        {"paper": "paperSave", "crop": crop_name, "curves": curves})
+    assert status == 200
+    csvs = sorted(w["csv"] for w in out["written"])
+    assert csvs == [
+        "curves/paperSave_crop1_Pt_111_0.1_M_HClO4.csv",
+        "curves/paperSave_f2a_red.csv",
+    ]
+    for rel in csvs:
+        assert os.path.exists(os.path.join(workspace, "paperSave", rel))
+        # sibling JSON + YAML frictionless descriptors also land alongside the CSV
+        assert os.path.exists(os.path.join(workspace, "paperSave", rel[:-4] + ".json"))
+        assert os.path.exists(os.path.join(workspace, "paperSave", rel[:-4] + ".yaml"))
+
+    csv_text = open(os.path.join(workspace, "paperSave", csvs[0]), encoding="utf-8").read()
+    assert "E,j" in csv_text.splitlines()[0]
+
+    index_path = os.path.join(workspace, "paperSave", "index.html")
+    assert os.path.exists(index_path)
+    index_html = open(index_path, encoding="utf-8").read()
+    assert crop_name in index_html
+    assert "paperSave_crop1_Pt_111_0.1_M_HClO4.csv" in index_html
+
+
+def test_save_curves_missing_crop_is_404(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperSaveNo.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_curves", {
+        "paper": "paperSaveNo", "crop": "nope_crop1",
+        "curves": [{"name": "x", "xy_real": [[0, 0], [1, 1]]}],
+    })
+    assert status == 404
+    assert "error" in out
+
+
+def test_save_curves_empty_list_is_400(server, tmp_path):
+    base, _ = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperSaveEmpty")
+    status, out = _post(base, "/api/save_curves",
+                        {"paper": "paperSaveEmpty", "crop": crop_name, "curves": []})
+    assert status == 400
+    assert "error" in out
+
+
+def test_open_paper_resume_reports_last_crop_and_step(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperResume.pdf")
+    _make_pdf_with_embedded_image(pdf)
+
+    status, out = _post(base, "/api/open_paper", {"pdf_path": pdf})
+    assert out["last_crop"] is None
+    assert out["last_step"] == 1
+
+    status, out = _post(base, "/api/save_crop", {
+        "paper": "paperResume", "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, 10, 10], "excludeRects": [], "image": _tiny_crop_data_url(),
+    })
+    crop_name = out["crop"]
+    _post(base, "/api/save_calibration",
+         {"paper": "paperResume", "crop": crop_name, "calibration": _CV_CALIBRATION})
+
+    status, out = _post(base, "/api/open_paper", {"pdf_path": pdf})
+    assert status == 200
+    assert out["last_crop"] == crop_name
+    assert out["last_step"] == 2   # save_calibration is the most recent action -> step 2
