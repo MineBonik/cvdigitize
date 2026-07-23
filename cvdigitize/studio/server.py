@@ -134,6 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_accept_curves(body)
             elif path == "/api/save_curves":
                 self._handle_save_curves(body)
+            elif path == "/api/recenter":
+                self._handle_recenter(body)
             else:
                 self._send_error_json("not found", 404)
         except StudioError as e:
@@ -236,6 +238,17 @@ class Handler(BaseHTTPRequestHandler):
         if not paper or not crop or not curves:
             raise StudioError("paper, crop and a non-empty curves list are required", 400)
         out = pipeline.save_curves(self.workspace_dir, paper, crop, curves)
+        self._send_json(out)
+
+    def _handle_recenter(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        curves = body.get("curves")
+        if not paper or not crop or not curves:
+            raise StudioError("paper, crop and a non-empty curves list are required", 400)
+        out = pipeline.recenter_curves(
+            self.workspace_dir, paper, crop, curves,
+            axis_width_override=body.get("axis_width"),
+            line_width_override=body.get("line_width"))
         self._send_json(out)
 
 

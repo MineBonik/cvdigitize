@@ -187,6 +187,22 @@ def _score_and_shape_curves(img, calibration: dict, raw_curves: list) -> list:
     return out
 
 
+def _mask_axis_and_frame(img: np.ndarray, measurement: dict):
+    """Paint the calibrated axis band white -- the shared first step for
+    autoextract/hand-trace/re-center -- and, when a frame is actually
+    detected, its own border too. Returns ``(masked_image, frame_or_None)``.
+    """
+    excl = exclusion_mask(img.shape, measurement["exclusion_band"])
+    masked = img.copy()
+    masked[excl] = 255
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frame = detect_frame_bbox(gray)
+    if frame is not None:
+        border_thickness = frame_border_thickness(gray < 220, frame)
+        masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
+    return masked, frame
+
+
 def autoextract_crop(workspace_dir: str, paper: str, crop: str, *,
                      axis_width_override: float | None = None,
                      line_width_override: float | None = None) -> dict:
@@ -209,14 +225,9 @@ def autoextract_crop(workspace_dir: str, paper: str, crop: str, *,
     measurement = measure_line_and_axis_width(
         img, calibration, axis_width_override=axis_width_override,
         line_width_override=line_width_override)
-    excl = exclusion_mask(img.shape, measurement["exclusion_band"])
-    masked = img.copy()
-    masked[excl] = 255
-
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    frame = detect_frame_bbox(gray)
+    masked, frame = _mask_axis_and_frame(img, measurement)
     if frame is None:
-        h, w = gray.shape
+        h, w = img.shape[:2]
         margin = 0.05
         frame = (int(w * margin), int(h * margin), int(w * (1 - margin)), int(h * (1 - margin)))
 
@@ -230,12 +241,9 @@ def autoextract_crop(workspace_dir: str, paper: str, crop: str, *,
     # shot from the curve's faded end up to a corner and back along two
     # edges). Measuring the frame's own border directly and insetting by at
     # least that (+ margin) keeps the whole border out regardless.
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     border_thickness = frame_border_thickness(gray < 220, frame)
     frame_inset_px = max(4, int(math.ceil(border_thickness)) + 3)
-    # belt-and-suspenders: also directly paint the border band white, so an
-    # inset that's a pixel or two short of a real, slightly irregular border
-    # still can't leak border ink into the mask
-    masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
 
     result = _extract_from_frame(masked, frame, value_thresh=0.55,
                                  frame_inset_px=frame_inset_px, max_spur_len=15)
@@ -263,17 +271,14 @@ def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list, *,
     measurement = measure_line_and_axis_width(
         img, calibration, axis_width_override=axis_width_override,
         line_width_override=line_width_override)
-    excl = exclusion_mask(img.shape, measurement["exclusion_band"])
-    masked = img.copy()
-    masked[excl] = 255
+    masked, _frame = _mask_axis_and_frame(img, measurement)
 
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    frame = detect_frame_bbox(gray)
-    if frame is not None:
-        border_thickness = frame_border_thickness(gray < 220, frame)
-        masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
-
-    results = extract_guides(masked, guides, return_gaps=True)
+    # anchor centering to the panel's own measured half-width rather than
+    # each point's local min/max ink span -- more robust near a sharp peak
+    # or crossing, where the local travel direction (and so the far edge of
+    # that span) is hard to estimate from just two neighbouring points
+    results = extract_guides(masked, guides, return_gaps=True,
+                             stroke_half_width=measurement["line_width"] / 2.0)
     raw_curves = [{"name": r["name"] or "curve", "rgb": None, "polyline_px": r["polyline_px"]}
                  for r in results]
     # fidelity is scored against the REAL (unmasked) ink -- honest about how
@@ -287,6 +292,44 @@ def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list, *,
 def accept_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> dict:
     """/api/accept_curves: persist the chosen curves onto the crop (Step 4 -> 5)."""
     return ws.set_crop_curves(workspace_dir, paper, crop, curves)
+
+
+def recenter_curves(workspace_dir: str, paper: str, crop: str, curves: list, *,
+                    axis_width_override: float | None = None,
+                    line_width_override: float | None = None) -> dict:
+    """/api/recenter: a one-click "straighten" pass -- re-centers each
+    curve's EXISTING polyline on the middle of its local ink width, using
+    the panel's own measured half-width as the anchor.
+
+    Snapping during the original trace already centers each point (see
+    guided._snap_stroke), but that estimate comes from just the two
+    neighbouring guide samples' direction -- not always enough in one pass
+    near a sharp peak or a busy junction, where a human can see by eye that
+    the trace still hugs one side of the ink. Re-running the SAME centering
+    logic with the already-extracted curve as its own guide is a cheap
+    second pass that only needs the curve's current points, not the
+    original hand-drawn strokes.
+    """
+    from ..guided import extract_near_guide
+
+    img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
+    measurement = measure_line_and_axis_width(
+        img, calibration, axis_width_override=axis_width_override,
+        line_width_override=line_width_override)
+    masked, _frame = _mask_axis_and_frame(img, measurement)
+
+    half_width = measurement["line_width"] / 2.0
+    radius = max(3.0, measurement["line_width"] * 1.5)
+
+    raw_curves = []
+    for c in curves:
+        xy = np.asarray(c["xy_px"], float)
+        recentered = extract_near_guide(masked, xy, radius=radius,
+                                        stroke_half_width=half_width) if len(xy) >= 2 else xy
+        raw_curves.append({"name": c.get("name", "curve"), "rgb": c.get("rgb"),
+                          "polyline_px": recentered if len(recentered) else xy})
+    curves_out = _score_and_shape_curves(img, calibration, raw_curves)
+    return {"curves": curves_out, "measurement": measurement}
 
 
 _INDEX_TMPL = """<!doctype html><meta charset="utf-8"><title>CV Studio — {paper}</title>

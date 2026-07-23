@@ -237,6 +237,7 @@
         <div id="curveResults"></div>
         <div class="row" style="margin-top:9px">
           <button id="acceptCurvesBtn" class="primary" disabled>Accept</button>
+          <button id="straightenBtn" disabled title="Re-center each curve on the middle of its own ink width">Straighten</button>
           <button id="handTraceBtn" disabled>Hand-trace instead</button>
         </div>
         <div id="acceptStatus" class="muted" style="margin-top:7px"></div>
@@ -473,7 +474,7 @@ function setActiveCrop(name){
     resultCurves = JSON.parse(JSON.stringify(meta.curves));
     renderCurveResults(resultCurves); renderLabelRows();
     $("extractStatus").textContent = `${resultCurves.length} curve(s) accepted in a previous session`;
-    $("acceptCurvesBtn").disabled = false; $("handTraceBtn").disabled = false;
+    $("acceptCurvesBtn").disabled = false; $("handTraceBtn").disabled = false; $("straightenBtn").disabled = false;
   }
   updateRailEnabled(); renderCalibGrid();
 }
@@ -489,6 +490,7 @@ function resetMeasureAndExtract(){
   $("measureResult").textContent = ""; $("toExtractBtn").disabled = true;
   $("extractStatus").textContent = ""; $("acceptStatus").textContent = "";
   $("curveResults").innerHTML = ""; $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
+  $("straightenBtn").disabled = true;
   $("traceCard").style.display = "none"; $("extractCard").style.display = "";
   $("labelRows").innerHTML = ""; $("saveStatus").textContent = "";
   $("measureSliders").style.display = "none";
@@ -750,7 +752,7 @@ function renderCurveResults(curves){
 async function autoExtract(){
   if(!activeCrop) return;
   $("extractStatus").textContent = "extracting…"; $("extractStatus").className = "muted";
-  $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
+  $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true; $("straightenBtn").disabled = true;
   try{
     const out = await api("POST", "/api/autoextract", {paper, crop: activeCrop,
       axis_width: measurement && measurement.axis_width, line_width: measurement && measurement.line_width});
@@ -764,6 +766,7 @@ async function autoExtract(){
       : "no curve found automatically — try Hand-trace";
     $("acceptCurvesBtn").disabled = resultCurves.length===0;
     $("handTraceBtn").disabled = false;
+    $("straightenBtn").disabled = resultCurves.length===0;
     updateRailEnabled();
     redraw();
   } catch(e){
@@ -847,6 +850,7 @@ async function extractFromGuides(){
     renderCurveResults(resultCurves); renderLabelRows();
     $("extractStatus").textContent = `${resultCurves.length} curve(s) from your guides`;
     $("acceptCurvesBtn").disabled = resultCurves.length===0;
+    $("straightenBtn").disabled = resultCurves.length===0;
     updateRailEnabled();
     redraw();
   } catch(e){
@@ -854,6 +858,28 @@ async function extractFromGuides(){
   }
 }
 $("extractFromGuidesBtn").addEventListener("click", extractFromGuides);
+
+async function straightenCurves(){
+  if(!activeCrop || !resultCurves.length) return;
+  $("straightenBtn").disabled = true;
+  $("extractStatus").textContent = "straightening…"; $("extractStatus").className = "muted";
+  try{
+    const out = await api("POST", "/api/recenter", {paper, crop: activeCrop, curves: resultCurves,
+      axis_width: measurement && measurement.axis_width, line_width: measurement && measurement.line_width});
+    resultCurves = out.curves; measurement = out.measurement || measurement;
+    syncMeasureSliders();
+    renderCurveResults(resultCurves); renderLabelRows();
+    const worst = resultCurves.reduce((m,c) =>
+      Math.min(m, (c.fidelity && c.fidelity.score!=null) ? c.fidelity.score : 100), 100);
+    $("extractStatus").textContent = `straightened — worst fidelity ${Math.round(worst)}/100`
+      + " (re-run again, or Hand-trace, if it's still off)";
+    redraw();
+  } catch(e){
+    $("extractStatus").textContent = "Error: " + e.message; $("extractStatus").className = "err";
+  }
+  $("straightenBtn").disabled = false;
+}
+$("straightenBtn").addEventListener("click", straightenCurves);
 
 // ---- step 5: label & save ----
 function renderLabelRows(){
