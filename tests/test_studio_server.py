@@ -428,6 +428,97 @@ def test_recenter_missing_crop_is_404(server, tmp_path):
     assert "error" in out
 
 
+def test_trace_does_not_truncate_where_curve_nears_axis(server, tmp_path):
+    """A hand-traced curve whose tail comes very close to the plotted axis
+    line must not get cut short there. Masking the axis band out of the ink
+    is needed for BLIND auto-extract (so it doesn't mistake the axis line
+    itself for a separate curve), but doing the same for a GUIDED trace
+    erases genuine curve ink exactly where a real curve approaches zero --
+    a real bug, reported live: a hand-traced curve's tail got cut off right
+    where it neared the axis. trace_crop masks only the frame border, not
+    the axis band, so ink near the axis stays available to snap to."""
+    base, _ = server
+    paper_name = "paperAxisNear"
+    h, w = 300, 500
+    img = np.full((h, w, 3), 255, np.uint8)
+    axis_row, axis_col = 200, 60
+    cv2.rectangle(img, (20, 20), (480, 280), (0, 0, 0), 2)
+    cv2.line(img, (axis_col, 40), (axis_col, axis_row), (0, 0, 0), 2)
+    cv2.line(img, (axis_col, axis_row), (460, axis_row), (0, 0, 0), 2)
+    # decays from y=100 down to within ~1px of the axis row (200) by the tail
+    xs = np.arange(80, 440)
+    ys = (axis_row - 100 * np.exp(-(xs - 80.0) / 80.0)).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 0, 0), -1)
+    ok, buf = cv2.imencode(".png", img)
+    data_url = "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+    pdf = str(tmp_path / f"{paper_name}.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_crop", {
+        "paper": paper_name, "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, w, h], "excludeRects": [], "image": data_url,
+    })
+    crop_name = out["crop"]
+    calibration = {
+        "E1": {"px": [axis_col, axis_row], "value": 0.0}, "E2": {"px": [440, axis_row], "value": 1.0},
+        "j1": {"px": [axis_col, axis_row], "value": -100}, "j2": {"px": [axis_col, 40], "value": 100},
+        "E_unit": "V", "E_ref": "RHE", "j_unit": "uA/cm2",
+    }
+    _post(base, "/api/save_calibration",
+         {"paper": paper_name, "crop": crop_name, "calibration": calibration})
+
+    guide_xs = np.linspace(85, 435, 30)
+    guide_ys = axis_row - 100 * np.exp(-(guide_xs - 80.0) / 80.0)
+    guides = [{"name": "hand", "radius": 10,
+              "strokes": [{"radius": 10,
+                          "pts": [[float(x), float(y)] for x, y in zip(guide_xs, guide_ys)]}]}]
+
+    status, out = _post(base, "/api/trace", {"paper": paper_name, "crop": crop_name, "guides": guides})
+    assert status == 200
+    assert out["curves"]
+    pts = np.asarray(out["curves"][0]["xy_px"])
+    assert pts[:, 0].max() >= 420, \
+        "the trace must reach close to the curve's real tail, not stop early near the axis"
+
+
+def _roughness(pts: np.ndarray) -> float:
+    """Mean magnitude of the point-to-point second difference -- a simple
+    jaggedness metric: near-zero for a smooth curve, large for a
+    staircase/zigzag."""
+    d2 = np.diff(pts, n=2, axis=0)
+    return float(np.mean(np.hypot(d2[:, 0], d2[:, 1])))
+
+
+def test_recenter_smooths_a_hand_trace_instead_of_roughening_it(server, tmp_path):
+    """Straighten must reduce point-to-point jaggedness, not amplify it --
+    the real bug reported live: after clicking it, an already-decent
+    hand-traced curve came back visibly more jagged (a zigzag/staircase)."""
+    base, _ = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperRoughness")
+
+    x0, y0, x1, y1 = _CV_BOX
+    xs = np.linspace(x0 + 10, x1 - 10, 40)
+    true_ys = 140 + 60 * np.sin((xs - x0) / 40)
+    rng = np.random.default_rng(0)
+    wobble_ys = true_ys + rng.uniform(-4, 4, size=len(xs))   # a jittery hand-drawn guide
+    guides = [{"name": "hand", "radius": 10,
+              "strokes": [{"radius": 10, "pts": [[float(x), float(y)] for x, y in zip(xs, wobble_ys)]}]}]
+
+    status, out = _post(base, "/api/trace", {"paper": "paperRoughness", "crop": crop_name, "guides": guides})
+    assert status == 200
+    curves = out["curves"]
+    assert curves
+    before = _roughness(np.asarray(curves[0]["xy_px"]))
+
+    status, out = _post(base, "/api/recenter",
+                        {"paper": "paperRoughness", "crop": crop_name, "curves": curves})
+    assert status == 200
+    after = _roughness(np.asarray(out["curves"][0]["xy_px"]))
+    assert after <= before, f"straighten should smooth, not roughen: before={before}, after={after}"
+
+
 def test_trace_snaps_guide_to_ink(server, tmp_path):
     base, _ = server
     crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperTrace")
