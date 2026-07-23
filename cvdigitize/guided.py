@@ -81,8 +81,8 @@ def split_strokes(points, jump_factor: float = 5.0, min_abs_jump: float = 15.0
     return [s for s in np.split(pts, cuts) if len(s) >= 2]
 
 
-def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float,
-                 half_width: float | None = None) -> np.ndarray:
+def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float
+                 ) -> np.ndarray:
     """Densify one stroke and snap each position to the CENTER of the ink's
     local width, not just its nearest edge.
 
@@ -91,18 +91,14 @@ def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float,
     a wide peak) -- there is no reason to trust the guide's distance from
     the stroke's far edge over its near one. Instead: estimate the local
     travel direction, then look at how far the nearby ink extends to each
-    side along the PERPENDICULAR to that direction.
-
-    Without a known ``half_width``, the point is placed at the midpoint of
-    that local span -- the standard centerline definition (same idea as
-    skeletonizing a thick stroke). With ``half_width`` (the panel's own
-    measured stroke half-width, from Step 3), the point is instead placed
-    exactly ``half_width`` in from whichever edge sits CLOSER to the guide,
-    trusting that one edge over the far one: near a sharp peak or crossing,
-    the local travel direction is hard to estimate from just two neighbours,
-    which can pull the far edge of the min/max span in from unrelated
-    nearby ink and bias the midpoint -- the near edge is directly adjacent
-    to where the guide already is and isn't subject to that.
+    side along the PERPENDICULAR to that direction, and place the point at
+    the midpoint of that span -- the standard centerline definition (same
+    idea as skeletonizing a thick stroke), read off the ink actually near
+    THIS point rather than a single panel-wide width. A real stroke's width
+    varies some along its length (confirmed live: anchoring to a fixed,
+    panel-wide half-width instead of each point's own local span made an
+    already-good trace visibly worse, turning smooth into jagged) -- the
+    local measurement is the ground truth, not an approximation of one.
     """
     dense = _densify(stroke, step=2.0)
     n = len(dense)
@@ -112,35 +108,37 @@ def _snap_stroke(stroke: np.ndarray, tree, ink_pts: np.ndarray, radius: float,
         if not near:
             continue
         cand = ink_pts[near]
+        dists = np.hypot(cand[:, 0] - g[0], cand[:, 1] - g[1])
+        nearest_i = np.argmin(dists)
         i0, i1 = max(0, i - 1), min(n - 1, i + 1)
         tangent = dense[i1] - dense[i0]
         tnorm = np.hypot(*tangent)
-        if tnorm < 1e-6:
-            snapped.append(cand[np.argmin(np.hypot(cand[:, 0] - g[0], cand[:, 1] - g[1]))])
+        # The centering below only makes sense when the guide is already
+        # basically ON or beside the ink (so "nearby ink" means "the local
+        # cross-section of THIS stroke", perpendicular to travel). When the
+        # guide has overshot into blank space and the only ink in reach is
+        # far away and mostly ALONG the travel direction (not beside it) --
+        # e.g. a guide overshooting past the curve's real end, with only a
+        # distant unrelated ink blob still inside the search radius -- the
+        # perpendicular projection of that ink is near zero and the "center"
+        # ends up almost exactly at the guide's own (blank) position: a real
+        # bug, confirmed live, where the trace kept going in a straight line
+        # through empty space instead of stopping. Falling back to the
+        # nearest actual ink pixel keeps the output ON ink either way.
+        if dists[nearest_i] > 0.5 * radius or tnorm < 1e-6:
+            snapped.append(cand[nearest_i])
             continue
         tangent = tangent / tnorm
         normal = np.array([-tangent[1], tangent[0]])
         offsets = (cand - g) @ normal
-        a, b = offsets.min(), offsets.max()
-        # the local span usually matches the known width -- trust the plain
-        # midpoint then (it's not tangent-direction-sensitive the way
-        # anchoring to one edge is). Only when the span is suspiciously
-        # WIDER than expected (one side reached extra ink -- an overlapping
-        # curve, a crossing, a tangent estimate thrown off near a sharp
-        # peak) is there real evidence of contamination worth correcting
-        # for by anchoring to whichever edge sits closer to the guide.
-        if half_width is not None and (b - a) > 2.2 * half_width:
-            center_offset = (a + half_width) if abs(a) <= abs(b) else (b - half_width)
-        else:
-            center_offset = (a + b) / 2.0
+        center_offset = (offsets.min() + offsets.max()) / 2.0
         snapped.append(g + normal * center_offset)
     return np.asarray(snapped) if snapped else np.empty((0, 2))
 
 
 def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
                        value_thresh: float = 0.6, resample_n: int = 600,
-                       strokes: list | None = None, return_gaps: bool = False,
-                       stroke_half_width: float | None = None):
+                       strokes: list | None = None, return_gaps: bool = False):
     """Extract the curve the guide points at, as an (x, y) pixel polyline.
 
     ``guide_xy`` is a rough (M, 2) polyline in image-pixel coordinates (the human
@@ -170,10 +168,6 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
     ``return_gaps=True`` the return becomes ``(polyline, gaps)`` where ``gaps``
     is a list of ``((x0,y0),(x1,y1))`` straight-line spans the caller can mark
     distinctly (dashed, greyed out) rather than presenting as traced ink.
-
-    ``stroke_half_width`` (typically the panel's own measured line width / 2,
-    from Step 3) anchors the centering to a known width instead of each
-    point's local min/max ink span -- see :func:`_snap_stroke`.
     """
     if cv2 is None:
         raise RuntimeError("guided extraction needs OpenCV (opencv-python-headless)")
@@ -212,8 +206,7 @@ def extract_near_guide(rgb: np.ndarray, guide_xy, *, radius: int | None = None,
     ink_pts = np.column_stack([xs, ys]).astype(float)
     tree = cKDTree(ink_pts)
 
-    pieces = [p for p in (_snap_stroke(pts, tree, ink_pts, r, half_width=stroke_half_width)
-                         for pts, r in stroke_list)
+    pieces = [p for p in (_snap_stroke(pts, tree, ink_pts, r) for pts, r in stroke_list)
              if len(p) >= 3]
     if not pieces:
         return _ret(np.empty((0, 2)), [])

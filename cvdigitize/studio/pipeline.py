@@ -188,9 +188,10 @@ def _score_and_shape_curves(img, calibration: dict, raw_curves: list) -> list:
 
 
 def _mask_axis_and_frame(img: np.ndarray, measurement: dict):
-    """Paint the calibrated axis band white -- the shared first step for
-    autoextract/hand-trace/re-center -- and, when a frame is actually
-    detected, its own border too. Returns ``(masked_image, frame_or_None)``.
+    """Paint the calibrated axis band white -- for BLIND auto-extract, which
+    has no guide and could otherwise mistake the plotted axis line itself
+    for a whole separate "curve" -- and, when a frame is actually detected,
+    its own border too. Returns ``(masked_image, frame_or_None)``.
     """
     excl = exclusion_mask(img.shape, measurement["exclusion_band"])
     masked = img.copy()
@@ -201,6 +202,26 @@ def _mask_axis_and_frame(img: np.ndarray, measurement: dict):
         border_thickness = frame_border_thickness(gray < 220, frame)
         masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
     return masked, frame
+
+
+def _mask_frame_only(img: np.ndarray) -> np.ndarray:
+    """Paint out just the detected frame's own border -- for hand-trace and
+    re-center, where a human's guide is already strong evidence of where the
+    real curve is, including where it legitimately runs close to or crosses
+    the plotted axis line (a CV routinely does, near zero current). Blanking
+    the axis band there too -- needed for blind auto-extract, see
+    :func:`_mask_axis_and_frame` -- would erase genuine curve ink at exactly
+    that point instead: a real bug, a hand-traced curve's tail got cut off
+    right where it neared the axis, with no ink left there to snap to.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frame = detect_frame_bbox(gray)
+    if frame is None:
+        return img
+    border_thickness = frame_border_thickness(gray < 220, frame)
+    masked = img.copy()
+    masked[frame_border_mask(masked.shape, frame, border_thickness + 2)] = 255
+    return masked
 
 
 def autoextract_crop(workspace_dir: str, paper: str, crop: str, *,
@@ -258,12 +279,15 @@ def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list, *,
     auto-extract eye check fails (STUDIO_PLAN.md §2) -- snaps human guide
     strokes to ink with the per-stroke-radius extraction G2 fixed.
 
-    Masks the axis + frame border out of the ink first, exactly like
-    autoextract_crop -- otherwise a guide drawn near where a curve fades out
-    close to the axis/frame can snap onto that ink instead of stopping, and
-    "follow" it (a real bug seen live: a hand-traced curve escaped along the
-    plot's frame after the real ink faded near the corner). The brush can
-    then never be snapped onto axis or frame ink, only real curve ink.
+    Masks only the detected frame's own border out of the ink -- NOT the
+    calibrated axis band (that's for autoextract_crop's blind, unguided
+    case; see _mask_frame_only). The frame border is never legitimately
+    curve data, so masking it is always safe and still prevents a guide
+    from escaping onto it and "following" it around the plot (a real bug
+    seen live). The axis band, though, a real curve routinely runs close to
+    or crosses -- masking it here erased genuine curve ink exactly there,
+    a real bug (a hand-traced curve's tail got cut off right where it
+    neared the axis).
     """
     from ..guided import extract_guides
 
@@ -271,14 +295,9 @@ def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list, *,
     measurement = measure_line_and_axis_width(
         img, calibration, axis_width_override=axis_width_override,
         line_width_override=line_width_override)
-    masked, _frame = _mask_axis_and_frame(img, measurement)
+    masked = _mask_frame_only(img)
 
-    # anchor centering to the panel's own measured half-width rather than
-    # each point's local min/max ink span -- more robust near a sharp peak
-    # or crossing, where the local travel direction (and so the far edge of
-    # that span) is hard to estimate from just two neighbouring points
-    results = extract_guides(masked, guides, return_gaps=True,
-                             stroke_half_width=measurement["line_width"] / 2.0)
+    results = extract_guides(masked, guides, return_gaps=True)
     raw_curves = [{"name": r["name"] or "curve", "rgb": None, "polyline_px": r["polyline_px"]}
                  for r in results]
     # fidelity is scored against the REAL (unmasked) ink -- honest about how
@@ -294,12 +313,38 @@ def accept_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> di
     return ws.set_crop_curves(workspace_dir, paper, crop, curves)
 
 
+def _smooth_polyline(xy: np.ndarray, window: int = 9, poly: int = 2) -> np.ndarray:
+    """Light Savitzky-Golay smoothing along the polyline's own point order.
+
+    Re-projecting each point of an ALREADY dense, precise curve onto its
+    local ink center (see recenter_curves) has each point make its own,
+    independent choice from noisy pixel-level ink boundaries -- neighbouring
+    points don't agree, and the result is jagged/staircased even though each
+    individual point is a reasonable center estimate (confirmed live: this
+    is exactly what made a decent trace visibly worse after "straightening").
+    A local-polynomial smooth removes that point-to-point disagreement while
+    still tracking a real sharp peak (unlike a plain moving average, which
+    would round it off).
+    """
+    n = len(xy)
+    w = min(window, n - 1 if n % 2 == 0 else n)
+    if w < poly + 2 or w < 3:
+        return xy
+    if w % 2 == 0:
+        w -= 1
+    from scipy.signal import savgol_filter
+    sx = savgol_filter(xy[:, 0], w, poly)
+    sy = savgol_filter(xy[:, 1], w, poly)
+    return np.column_stack([sx, sy])
+
+
 def recenter_curves(workspace_dir: str, paper: str, crop: str, curves: list, *,
                     axis_width_override: float | None = None,
                     line_width_override: float | None = None) -> dict:
     """/api/recenter: a one-click "straighten" pass -- re-centers each
-    curve's EXISTING polyline on the middle of its local ink width, using
-    the panel's own measured half-width as the anchor.
+    curve's EXISTING polyline on the middle of its local ink width, then
+    smooths the point-to-point jaggedness that independent re-projection
+    introduces (see _smooth_polyline).
 
     Snapping during the original trace already centers each point (see
     guided._snap_stroke), but that estimate comes from just the two
@@ -308,7 +353,8 @@ def recenter_curves(workspace_dir: str, paper: str, crop: str, curves: list, *,
     the trace still hugs one side of the ink. Re-running the SAME centering
     logic with the already-extracted curve as its own guide is a cheap
     second pass that only needs the curve's current points, not the
-    original hand-drawn strokes.
+    original hand-drawn strokes. Masks only the frame border, not the
+    calibrated axis band -- see _mask_frame_only.
     """
     from ..guided import extract_near_guide
 
@@ -316,16 +362,18 @@ def recenter_curves(workspace_dir: str, paper: str, crop: str, curves: list, *,
     measurement = measure_line_and_axis_width(
         img, calibration, axis_width_override=axis_width_override,
         line_width_override=line_width_override)
-    masked, _frame = _mask_axis_and_frame(img, measurement)
-
-    half_width = measurement["line_width"] / 2.0
+    masked = _mask_frame_only(img)
     radius = max(3.0, measurement["line_width"] * 1.5)
 
     raw_curves = []
     for c in curves:
         xy = np.asarray(c["xy_px"], float)
-        recentered = extract_near_guide(masked, xy, radius=radius,
-                                        stroke_half_width=half_width) if len(xy) >= 2 else xy
+        if len(xy) >= 2:
+            recentered = extract_near_guide(masked, xy, radius=radius)
+            if len(recentered) >= 5:
+                recentered = _smooth_polyline(recentered)
+        else:
+            recentered = xy
         raw_curves.append({"name": c.get("name", "curve"), "rgb": c.get("rgb"),
                           "polyline_px": recentered if len(recentered) else xy})
     curves_out = _score_and_shape_curves(img, calibration, raw_curves)
