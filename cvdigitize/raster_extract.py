@@ -469,16 +469,22 @@ def _run_length_through(line: np.ndarray, pos: int) -> int:
 
 
 def _axis_thickness(dark: np.ndarray, *, fixed_index: int, span: tuple[int, int],
-                    along_columns: bool, n_samples: int = 25) -> float:
+                    along_columns: bool, n_samples: int = 40) -> float:
     """Robust thickness of a straight axis line at ``fixed_index``.
 
     ``along_columns=True`` measures a HORIZONTAL axis (fixed row): at each
-    sampled column, the vertical dark-run through that row. ``along_columns=
-    False`` measures a VERTICAL axis (fixed column): at each sampled row, the
-    horizontal dark-run through that column. A curve crossing the axis makes a
-    same-column/row run much longer at that one sample, so the low (25th)
-    percentile over many samples estimates the clean axis-only thickness
-    rather than getting pulled up by crossings.
+    sampled column, extrapolate outward in both directions from that row
+    until the ink ends (the first white pixel) -- ``_run_length_through``
+    -- to get the local dark-run thickness. ``along_columns=False`` measures
+    a VERTICAL axis (fixed column) the same way, one row at a time.
+
+    A curve crossing the axis makes that ONE sample's run much longer (it's
+    reading through the crossing curve's ink, not just the thin axis line),
+    but never shorter -- so unlike a percentile (which is still pulled up
+    once more than that fraction of samples land near a crossing, e.g. a CV
+    with several crossings across a short span), the MINIMUM over many
+    samples is safe: it only takes a single clean sample anywhere along the
+    span to reveal the true axis-only thickness.
     """
     lo, hi = sorted(span)
     if hi - lo < 4:
@@ -492,7 +498,7 @@ def _axis_thickness(dark: np.ndarray, *, fixed_index: int, span: tuple[int, int]
         r = _run_length_through(line, fixed_index)
         if r > 0:
             runs.append(r)
-    return float(np.percentile(runs, 25)) if runs else 1.0
+    return float(np.min(runs)) if runs else 1.0
 
 
 def _calib_anchor_points(calibration: dict) -> tuple:
