@@ -9,9 +9,9 @@ One folder per paper (see STUDIO_PLAN.md §5):
         {stem}_crop{n}.png    baked crop (mask already applied)
         {stem}_crop{n}.json   {name, type, source, bbox, excludeRects,
                                calibration, curves, lineWidth, axisWidth, parentCrop}
-      curves/            final echemdb-format outputs (later phases)
-      studio_state.json  session info, for resume
-      index.html         per-paper dashboard (later phases)
+      curves/            final echemdb-format outputs (CSV+JSON+YAML per curve)
+      studio_state.json  {lastCrop, lastStep, decisions:[{at,message}]} - resume + audit trail
+      index.html         per-paper dashboard (crops + saved curves), regenerated on save
 
 All writes are guarded by a process-wide lock — the server is threaded, and
 two requests touching the same paper's JSON files must not interleave.
@@ -141,6 +141,7 @@ def save_crop(workspace: str, stem: str, *, type_: str, source: str, bbox,
         }
         with open(_crop_json_path(workspace, stem, name), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+    touch_state(workspace, stem, crop=name, step=1, decision=f"cropped {name} ({type_})")
     return meta
 
 
@@ -181,6 +182,7 @@ def set_crop_calibration(workspace: str, stem: str, crop: str, calibration: dict
         meta["calibration"] = calibration
         with open(path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+    touch_state(workspace, stem, crop=crop, step=2, decision=f"calibrated {crop}")
     return meta
 
 
@@ -197,6 +199,8 @@ def set_crop_measurement(workspace: str, stem: str, crop: str, *,
         meta["axisWidth"] = axis_width
         with open(path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+    touch_state(workspace, stem, crop=crop, step=3,
+               decision=f"measured {crop} (line {line_width}px / axis {axis_width}px)")
     return meta
 
 
@@ -211,6 +215,7 @@ def set_crop_curves(workspace: str, stem: str, crop: str, curves: list) -> dict:
         meta["curves"] = curves
         with open(path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+    touch_state(workspace, stem, crop=crop, step=4, decision=f"accepted {len(curves)} curve(s) on {crop}")
     return meta
 
 
@@ -225,9 +230,8 @@ def load_crop_image(workspace: str, stem: str, crop: str) -> np.ndarray | None:
 def delete_crop(workspace: str, stem: str, crop: str) -> bool:
     """Remove a crop's png+json.
 
-    Curve files saved from this crop (§9 naming, added in a later phase) are
-    not yet tracked back to their source crop, so cleaning those up is left to
-    the save/label step that will introduce that bookkeeping.
+    Curve files saved from this crop (§9 naming) are not tracked back to
+    their source crop, so cleaning those up is left to a future pass.
     """
     found = False
     with _LOCK:
@@ -236,3 +240,59 @@ def delete_crop(workspace: str, stem: str, crop: str) -> bool:
                 os.remove(p)
                 found = True
     return found
+
+
+# --------------------------------------------------------------------------- #
+# curves/
+# --------------------------------------------------------------------------- #
+def curves_dir(workspace: str, stem: str) -> str:
+    return os.path.join(paper_dir(workspace, stem), "curves")
+
+
+def list_curve_files(workspace: str, stem: str) -> list[str]:
+    d = curves_dir(workspace, stem)
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if f.endswith(".csv"))
+
+
+# --------------------------------------------------------------------------- #
+# studio_state.json — resume + decisions log (§5)
+# --------------------------------------------------------------------------- #
+def _state_path(workspace: str, stem: str) -> str:
+    return os.path.join(paper_dir(workspace, stem), "studio_state.json")
+
+
+def read_state(workspace: str, stem: str) -> dict:
+    path = _state_path(workspace, stem)
+    if not os.path.exists(path):
+        return {"lastCrop": None, "lastStep": 1, "decisions": []}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_state(workspace: str, stem: str, state: dict) -> None:
+    ensure_paper_dir(workspace, stem)
+    with _LOCK, open(_state_path(workspace, stem), "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def touch_state(workspace: str, stem: str, *, crop: str | None = None,
+                step: int | None = None, decision: str | None = None) -> dict:
+    """Record where the human left off (for resume) and, optionally, a
+    one-line decision (for the audit trail) -- called after each action that
+    moves the session forward."""
+    import datetime
+
+    state = read_state(workspace, stem)
+    if crop is not None:
+        state["lastCrop"] = crop
+    if step is not None:
+        state["lastStep"] = step
+    if decision:
+        state.setdefault("decisions", []).append({
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "message": decision,
+        })
+    write_state(workspace, stem, state)
+    return state

@@ -54,6 +54,9 @@ def analyze_paper(workspace_dir: str, pdf_path: str) -> dict:
 
     analysis = {"pdf_path": pdf_path, "paper": stem, "pages": pages}
     ws.write_analysis(workspace_dir, stem, analysis)
+    state = ws.read_state(workspace_dir, stem)
+    analysis["last_crop"] = state.get("lastCrop")
+    analysis["last_step"] = state.get("lastStep", 1)
     return analysis
 
 
@@ -206,3 +209,93 @@ def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list) -> dict:
 def accept_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> dict:
     """/api/accept_curves: persist the chosen curves onto the crop (Step 4 -> 5)."""
     return ws.set_crop_curves(workspace_dir, paper, crop, curves)
+
+
+_INDEX_TMPL = """<!doctype html><meta charset="utf-8"><title>CV Studio — {paper}</title>
+<style>
+body{{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:2rem;max-width:900px;color:#1a1a1a}}
+h1{{margin-bottom:.2rem}} h2{{margin-top:2rem}}
+table{{border-collapse:collapse;width:100%}} td,th{{border:1px solid #ddd;padding:.4rem .7rem;
+  text-align:left;font-size:.9rem}}
+code{{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}}
+</style>
+<h1>CV Studio &mdash; {paper}</h1>
+<h2>Crops ({n_crops})</h2>
+<table><tr><th>crop</th><th>type</th><th>calibrated</th><th>line/axis width</th><th>curves</th></tr>
+{crop_rows}
+</table>
+<h2>Saved curves ({n_curves})</h2>
+<table><tr><th>file</th></tr>
+{curve_rows}
+</table>
+"""
+
+
+def _write_paper_index(workspace_dir: str, paper: str) -> str:
+    """Regenerate the per-paper dashboard (§4 Step 5: "Per-paper index.html
+    refreshes")."""
+    crops = ws.list_crops(workspace_dir, paper)
+    crop_rows = "".join(
+        f"<tr><td>{c['name']}</td><td>{c['type']}</td>"
+        f"<td>{'yes' if c.get('calibration') else 'no'}</td>"
+        f"<td>{c.get('lineWidth') or '—'} / {c.get('axisWidth') or '—'}</td>"
+        f"<td>{len(c.get('curves') or [])}</td></tr>"
+        for c in crops
+    ) or "<tr><td colspan=5><i>none yet</i></td></tr>"
+
+    curve_files = ws.list_curve_files(workspace_dir, paper)
+    curve_rows = "".join(f"<tr><td><code>curves/{f}</code></td></tr>" for f in curve_files) \
+        or "<tr><td><i>none yet</i></td></tr>"
+
+    html = _INDEX_TMPL.format(paper=paper, n_crops=len(crops), crop_rows=crop_rows,
+                              n_curves=len(curve_files), curve_rows=curve_rows)
+    path = os.path.join(ws.paper_dir(workspace_dir, paper), "index.html")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return path
+
+
+def save_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> dict:
+    """/api/save_curves: write each curve as an echemdb datapackage (Step 5).
+
+    Naming (§9): ``{paper_stem}_{figtag}_{label}`` -- figtag defaults to the
+    crop name, editable to echemdb ``f2a`` style; label is the sanitized
+    curve name. Carries the calibration and source crop in the metadata
+    comment so provenance is recoverable.
+    """
+    from ..package import CurveMeta, write_datapackage
+
+    crop_meta = ws.load_crop_meta(workspace_dir, paper, crop)
+    if crop_meta is None:
+        raise FileNotFoundError(f"{paper}/{crop}")
+    calibration = crop_meta.get("calibration") or {}
+    analysis = ws.read_analysis(workspace_dir, paper) or {}
+    out_dir = ws.curves_dir(workspace_dir, paper)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # crop names are always "{paper}_crop{n}"; the default figtag is just the
+    # "crop{n}" suffix (§9) -- using the crop name as-is would double the
+    # paper prefix into the filename ("{paper}_{paper}_crop1_...")
+    default_figtag = crop[len(paper) + 1:] if crop.startswith(paper + "_") else crop
+
+    written = []
+    for c in curves:
+        figtag = ws.safe_name(c.get("figtag") or default_figtag)
+        label = ws.safe_name(c.get("label") or c.get("name") or "curve")
+        name = f"{paper}_{figtag}_{label}"
+        data = np.asarray(c["xy_real"], float)
+        meta = CurveMeta(
+            name=name, figure=figtag, curve=c.get("label") or c.get("name") or "",
+            x_label="E", x_unit=calibration.get("E_unit", "V"),
+            y_label="j", y_unit=calibration.get("j_unit", ""),
+            source_pdf=analysis.get("pdf_path", ""), method="digitized",
+            comment=f"CV Studio: crop={crop}, type={crop_meta.get('type', '')}",
+        )
+        paths = write_datapackage(out_dir, data, meta, yaml=True)
+        written.append({k: os.path.relpath(v, ws.paper_dir(workspace_dir, paper)).replace("\\", "/")
+                        for k, v in paths.items()})
+
+    _write_paper_index(workspace_dir, paper)
+    ws.touch_state(workspace_dir, paper, crop=crop, step=5,
+                   decision=f"saved {len(curves)} curve(s) from {crop} to curves/")
+    return {"written": written}
