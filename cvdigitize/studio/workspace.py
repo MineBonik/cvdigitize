@@ -184,6 +184,36 @@ def set_crop_calibration(workspace: str, stem: str, crop: str, calibration: dict
     return meta
 
 
+def set_crop_measurement(workspace: str, stem: str, crop: str, *,
+                         line_width: float, axis_width: float) -> dict:
+    """Read-modify-write lineWidth/axisWidth (Step 3: /api/measure)."""
+    path = _crop_json_path(workspace, stem, crop)
+    with _LOCK:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{stem}/{crop}")
+        with open(path, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["lineWidth"] = line_width
+        meta["axisWidth"] = axis_width
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    return meta
+
+
+def set_crop_curves(workspace: str, stem: str, crop: str, curves: list) -> dict:
+    """Read-modify-write the accepted curves (Step 4: /api/accept_curves)."""
+    path = _crop_json_path(workspace, stem, crop)
+    with _LOCK:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{stem}/{crop}")
+        with open(path, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["curves"] = curves
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    return meta
+
+
 def load_crop_image(workspace: str, stem: str, crop: str) -> np.ndarray | None:
     path = _crop_png_path(workspace, stem, crop)
     if not os.path.exists(path):

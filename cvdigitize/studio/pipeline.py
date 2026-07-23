@@ -9,10 +9,14 @@ import base64
 import os
 
 import cv2
+import numpy as np
 
+from ..calibrate import calibration_from_anchors
 from ..ingest import classify_pdf, render_page
-from ..raster_extract import (crop_tick_labels, detect_axis_ticks,
-                              detect_frame_bbox, find_image_regions, render_region)
+from ..raster_extract import (_extract_from_frame, crop_tick_labels,
+                              detect_axis_ticks, detect_frame_bbox,
+                              exclusion_mask, find_image_regions,
+                              measure_line_and_axis_width, render_region)
 from . import workspace as ws
 
 
@@ -99,3 +103,106 @@ def autocalibrate_crop(workspace_dir: str, paper: str, crop: str) -> dict:
                  for k, im in label_crops.items() if k in _LABEL_KEY_TO_ANCHOR}
 
     return {"points": points, "labelCrops": label_urls, "frame": list(frame)}
+
+
+def _load_crop_and_calibration(workspace_dir: str, paper: str, crop: str):
+    img = ws.load_crop_image(workspace_dir, paper, crop)
+    if img is None:
+        raise FileNotFoundError(f"{paper}/{crop}")
+    meta = ws.load_crop_meta(workspace_dir, paper, crop)
+    calibration = meta.get("calibration") if meta else None
+    if not calibration:
+        raise ValueError("crop has no saved calibration yet - finish Step 2 first")
+    return img, calibration
+
+
+def measure_crop(workspace_dir: str, paper: str, crop: str) -> dict:
+    """/api/measure: line width vs. axis width + the axis-exclusion band (Step 3)."""
+    img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
+    result = measure_line_and_axis_width(img, calibration)
+    ws.set_crop_measurement(workspace_dir, paper, crop,
+                            line_width=result["line_width"], axis_width=result["axis_width"])
+    return result
+
+
+def _calibration_object(calibration: dict):
+    return calibration_from_anchors(
+        x_anchor1=(calibration["E1"]["px"][0], calibration["E1"]["value"]),
+        x_anchor2=(calibration["E2"]["px"][0], calibration["E2"]["value"]),
+        y_anchor1=(calibration["j1"]["px"][1], calibration["j1"]["value"]),
+        y_anchor2=(calibration["j2"]["px"][1], calibration["j2"]["value"]),
+        x_unit=calibration.get("E_unit", "V"), y_unit=calibration.get("j_unit", ""),
+    )
+
+
+def _score_and_shape_curves(img, calibration: dict, raw_curves: list) -> list:
+    """Calibrate + reference-free-fidelity-score a list of {name, rgb, polyline_px}."""
+    from ..qc import _fidelity_for_curves
+
+    cal = _calibration_object(calibration)
+    fid_input = [{"name": c["name"], "xy": c["polyline_px"], "rgb": c.get("rgb")} for c in raw_curves]
+    fids = _fidelity_for_curves(img, fid_input)
+
+    out = []
+    for c, fid in zip(raw_curves, fids):
+        xy_px = np.asarray(c["polyline_px"], float)
+        xy_real = cal.apply(xy_px)
+        out.append({
+            "name": c["name"], "rgb": list(c.get("rgb") or (0.1, 0.1, 0.1)),
+            "xy_px": np.round(xy_px, 2).tolist(), "xy_real": np.round(xy_real, 6).tolist(),
+            "fidelity": fid,
+        })
+    return out
+
+
+def autoextract_crop(workspace_dir: str, paper: str, crop: str) -> dict:
+    """/api/autoextract: mask the axis out, then detect-frame + trace (Step 4).
+
+    Masking ``exclusion_band`` to white before extraction is the same
+    technique the crop tool already uses to blank a legend box (paint over,
+    don't special-case the extractor) -- cleaner than the strand-level
+    ``_is_axis_strand`` heuristic because calibration pins the axis exactly.
+    Frame detection runs on the UNMASKED image first: blanking the axis can
+    erase most of the frame's own border, and re-running Hough-line frame
+    detection on that gutted image risks latching onto a leftover corner
+    fragment instead of returning "no frame found" -- detecting once, before
+    masking, avoids that trap entirely.
+    """
+    img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
+    measurement = measure_line_and_axis_width(img, calibration)
+    excl = exclusion_mask(img.shape, measurement["exclusion_band"])
+    masked = img.copy()
+    masked[excl] = 255
+
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    frame = detect_frame_bbox(gray)
+    if frame is None:
+        h, w = gray.shape
+        margin = 0.05
+        frame = (int(w * margin), int(h * margin), int(w * (1 - margin)), int(h * (1 - margin)))
+
+    result = _extract_from_frame(masked, frame, value_thresh=0.55,
+                                 frame_inset_px=4, max_spur_len=15)
+    curves = _score_and_shape_curves(img, calibration, result.get("curves", []))
+    return {"curves": curves, "measurement": measurement}
+
+
+def trace_crop(workspace_dir: str, paper: str, crop: str, guides: list) -> dict:
+    """/api/trace: the hand-trace fallback, always reachable when the
+    auto-extract eye check fails (STUDIO_PLAN.md §2) -- snaps human guide
+    strokes to ink with the per-stroke-radius extraction G2 fixed."""
+    from ..guided import extract_guides
+
+    img, calibration = _load_crop_and_calibration(workspace_dir, paper, crop)
+    results = extract_guides(img, guides, return_gaps=True)
+    raw_curves = [{"name": r["name"] or "curve", "rgb": None, "polyline_px": r["polyline_px"]}
+                 for r in results]
+    curves = _score_and_shape_curves(img, calibration, raw_curves)
+    for c, r in zip(curves, results):
+        c["gaps"] = [[list(p0), list(p1)] for p0, p1 in (r.get("gaps") or [])]
+    return {"curves": curves}
+
+
+def accept_curves(workspace_dir: str, paper: str, crop: str, curves: list) -> dict:
+    """/api/accept_curves: persist the chosen curves onto the crop (Step 4 -> 5)."""
+    return ws.set_crop_curves(workspace_dir, paper, crop, curves)

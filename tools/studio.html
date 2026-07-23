@@ -76,6 +76,21 @@
            padding:5px 7px;font:inherit;width:100%;min-width:0}
   .labelcrop{display:block;margin-top:6px;max-width:100%;border:1px solid var(--line);border-radius:4px;
             image-rendering:pixelated;background:#fff}
+  ul.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+  ul.list li{display:flex;align-items:center;gap:8px;background:#0e1116;border:1px solid var(--line);
+       border-radius:8px;padding:5px 8px;cursor:pointer}
+  ul.list li.active{border-color:var(--accent)}
+  .swatch{width:13px;height:13px;border-radius:4px;flex:0 0 auto}
+  ul.list .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  ul.list .cnt{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  ul.list button{padding:2px 6px;font-size:11px}
+  .curverow{display:flex;align-items:center;gap:8px;background:#0e1116;border:1px solid var(--line);
+           border-radius:8px;padding:6px 8px;margin-bottom:6px}
+  .curverow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+  .fidbadge{font-weight:700;border-radius:5px;padding:2px 8px;font-size:12px;color:#012}
+  .fidbadge.good{background:#2ecc71}
+  .fidbadge.fair{background:#f1c40f}
+  .fidbadge.poor{background:#e74c3c;color:#fff}
 </style>
 </head>
 <body>
@@ -163,6 +178,72 @@
       </div>
     </div>
 
+    <div id="step3Cards" style="display:none">
+      <div class="card" id="measureCard">
+        <div class="hd">Measure <span class="muted">(automatic)</span></div>
+        <div class="row">
+          <button id="measureBtn" class="primary">Measure</button>
+          <button id="backToCalibBtn">&larr; back to calibrate</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          Measures the curve's line width vs. the axis line's width, and
+          computes the axis-exclusion band (faint red on the canvas) — the
+          strip around the axes that extraction will ignore, so the axis
+          itself is never traced as data.
+        </div>
+        <div id="measureResult" class="muted" style="margin-top:9px"></div>
+        <div class="row" style="margin-top:9px">
+          <button id="toExtractBtn" class="primary" disabled>Continue to extract &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="step4Cards" style="display:none">
+      <div class="card" id="extractCard">
+        <div class="hd">Extract &amp; check</div>
+        <div class="row">
+          <button id="autoExtractBtn" class="primary">Auto-extract</button>
+          <button id="backToMeasureBtn">&larr; back to measure</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          Each curve is drawn emphasized on the canvas with a fidelity badge
+          (how well it sits on the ink, reference-free). A red-dashed
+          segment marks a chord jumping across empty space — re-trace by
+          hand if the eye check doesn't look right, for any figure type.
+        </div>
+        <div id="extractStatus" class="muted" style="margin:8px 0"></div>
+        <div id="curveResults"></div>
+        <div class="row" style="margin-top:9px">
+          <button id="acceptCurvesBtn" class="primary" disabled>Accept</button>
+          <button id="handTraceBtn" disabled>Hand-trace instead</button>
+        </div>
+        <div id="acceptStatus" class="muted" style="margin-top:7px"></div>
+      </div>
+
+      <div class="card" id="traceCard" style="display:none">
+        <div class="hd">Hand-trace</div>
+        <div class="row">
+          <span class="muted">Brush</span>
+          <input id="brushRange" type="range" min="3" max="60" value="12" style="flex:1">
+          <span id="brushVal" class="muted" style="font-variant-numeric:tabular-nums">12&nbsp;px</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input id="traceCurveName" type="text" placeholder="curve name" style="flex:1">
+          <button id="addTraceCurve" class="primary">Add</button>
+        </div>
+        <ul id="traceCurveList" class="list" style="margin-top:9px"></ul>
+        <div class="hint" style="margin-top:8px">
+          Pick a curve above, then drag roughly along it on the canvas
+          (several strokes ok). <kbd>U</kbd> undoes the last stroke. The
+          shaded band is exactly the corridor that gets snapped to ink.
+        </div>
+        <div class="row" style="margin-top:9px">
+          <button id="extractFromGuidesBtn" class="primary">Extract from guides</button>
+          <button id="backToExtractBtn">&larr; back to auto-extract</button>
+        </div>
+      </div>
+    </div>
+
     <div class="muted" style="font-size:11px">Runs against your local <code>cvdigitize studio</code> server — nothing is uploaded anywhere else.</div>
   </aside>
 
@@ -207,9 +288,21 @@ let pendingCropType = null;
 const ANCHORS = ["E1","E2","j1","j2"];
 let activeCrop = null;         // crop name selected for calibration, once a crop is loaded
 let calib = null;              // {E1:{px,value},...,E_unit,E_ref,j_unit} for activeCrop
+let calibSaved = false;        // true once /api/save_calibration has succeeded for activeCrop
 let labelCrops = {};           // {E1: dataURL, ...} zoomed tick-label crops from last autocalibrate
 let pendingAnchor = null;      // anchor armed by "set pt", placed on next canvas click
 let draggingAnchor = null;     // anchor currently being dragged
+
+// ---- step 3: measure ----
+let measurement = null;        // {line_width, axis_width, suggested_brush, exclusion_band}
+
+// ---- step 4: extract & check ----
+let resultCurves = [];         // last /api/autoextract or /api/trace result, shown + acceptable
+let traceMode = false;         // hand-trace sub-panel active within step 4
+let traceCurves = [];          // [{name, color, strokes:[{radius,pts}]}] being hand-drawn
+let traceActive = -1;
+let brush = 12;
+let drawing = false;
 
 const stage = document.getElementById("stage");
 const cv = document.getElementById("cv");
@@ -301,21 +394,34 @@ function setActiveCrop(name){
   activeCrop = name;
   const meta = crops.find(c => c.name===name);
   calib = (meta && meta.calibration) ? JSON.parse(JSON.stringify(meta.calibration)) : {};
+  calibSaved = !!(meta && meta.calibration);
   labelCrops = {}; pendingAnchor = null; draggingAnchor = null;
   $("EunitV").value = calib.E_unit || "V";
   $("ErefV").value = calib.E_ref || "RHE";
   $("junitV").value = calib.j_unit || "uA/cm2";
   $("calibCropName").textContent = "— " + name;
   $("calibStatus").textContent = "";
+  resetMeasureAndExtract();
   updateRailEnabled(); renderCalibGrid();
 }
 function clearActiveCrop(){
-  activeCrop = null; calib = null; labelCrops = {}; pendingAnchor = null; draggingAnchor = null;
+  activeCrop = null; calib = null; calibSaved = false; labelCrops = {}; pendingAnchor = null; draggingAnchor = null;
+  resetMeasureAndExtract();
   updateRailEnabled();
-  if(activeStep===2) setStep(1);
+  if(activeStep>=2) setStep(1);
+}
+function resetMeasureAndExtract(){
+  measurement = null; resultCurves = []; traceMode = false;
+  traceCurves = []; traceActive = -1;
+  $("measureResult").textContent = ""; $("toExtractBtn").disabled = true;
+  $("extractStatus").textContent = ""; $("acceptStatus").textContent = "";
+  $("curveResults").innerHTML = ""; $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
+  $("traceCard").style.display = "none"; $("extractCard").style.display = "";
 }
 function updateRailEnabled(){
   document.querySelector('.step[data-step="2"]').classList.toggle("disabled", !activeCrop);
+  document.querySelector('.step[data-step="3"]').classList.toggle("disabled", !calibSaved);
+  document.querySelector('.step[data-step="4"]').classList.toggle("disabled", !measurement);
 }
 
 // ---- crops gallery ----
@@ -479,6 +585,7 @@ async function saveCalibration(){
   try{
     await api("POST", "/api/save_calibration", {paper, crop: activeCrop, calibration: payload});
     $("calibStatus").textContent = "saved"; $("calibStatus").className = "muted";
+    calibSaved = true; updateRailEnabled();
     await refreshCrops();
   } catch(e){
     $("calibStatus").textContent = "Error: " + e.message; $("calibStatus").className = "err";
@@ -491,17 +598,165 @@ $("saveCalibBtn").addEventListener("click", saveCalibration);
   calib.E_unit = $("EunitV").value.trim()||"V"; calib.E_ref = $("ErefV").value.trim(); calib.j_unit = $("junitV").value.trim();
 }));
 
+// ---- step 3: measure ----
+async function measureCrop(){
+  if(!activeCrop) return;
+  $("measureResult").textContent = "measuring…"; $("measureResult").className = "muted";
+  try{
+    measurement = await api("POST", "/api/measure", {paper, crop: activeCrop});
+    $("measureResult").innerHTML = `line width <b>${measurement.line_width}px</b> &middot; `
+      + `axis width <b>${measurement.axis_width}px</b> &middot; `
+      + `suggested brush <b>${measurement.suggested_brush}px</b>`;
+    $("toExtractBtn").disabled = false;
+    updateRailEnabled();
+    redraw();
+  } catch(e){
+    $("measureResult").textContent = "Error: " + e.message; $("measureResult").className = "err";
+  }
+}
+$("measureBtn").addEventListener("click", measureCrop);
+$("backToCalibBtn").addEventListener("click", () => setStep(2));
+$("toExtractBtn").addEventListener("click", () => setStep(4));
+
+// ---- step 4: extract & check ----
+function renderCurveResults(curves){
+  const box = $("curveResults"); box.innerHTML = "";
+  curves.forEach(c => {
+    const f = c.fidelity || {};
+    const row = document.createElement("div"); row.className = "curverow";
+    const swatch = document.createElement("span"); swatch.className = "swatch";
+    const [r,g,b] = c.rgb || [0.1,0.1,0.1];
+    swatch.style.background = `rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
+    row.appendChild(swatch);
+    const nm = document.createElement("span"); nm.className = "nm";
+    nm.textContent = `${c.name} (${c.xy_px.length}pt)`;
+    row.appendChild(nm);
+    const badge = document.createElement("span");
+    const score = f.score;
+    badge.className = "fidbadge " + (score==null ? "poor" : score>=85 ? "good" : score>=65 ? "fair" : "poor");
+    badge.textContent = score==null ? "n/a" : Math.round(score);
+    row.appendChild(badge);
+    box.appendChild(row);
+  });
+}
+async function autoExtract(){
+  if(!activeCrop) return;
+  $("extractStatus").textContent = "extracting…"; $("extractStatus").className = "muted";
+  $("acceptCurvesBtn").disabled = true; $("handTraceBtn").disabled = true;
+  try{
+    const out = await api("POST", "/api/autoextract", {paper, crop: activeCrop});
+    resultCurves = out.curves; measurement = out.measurement || measurement;
+    renderCurveResults(resultCurves);
+    const worst = resultCurves.reduce((m,c) =>
+      Math.min(m, (c.fidelity && c.fidelity.score!=null) ? c.fidelity.score : 100), 100);
+    $("extractStatus").textContent = resultCurves.length
+      ? `${resultCurves.length} curve(s) found — worst fidelity ${Math.round(worst)}/100`
+      : "no curve found automatically — try Hand-trace";
+    $("acceptCurvesBtn").disabled = resultCurves.length===0;
+    $("handTraceBtn").disabled = false;
+    redraw();
+  } catch(e){
+    $("extractStatus").textContent = "Error: " + e.message; $("extractStatus").className = "err";
+  }
+}
+$("autoExtractBtn").addEventListener("click", autoExtract);
+$("backToMeasureBtn").addEventListener("click", () => setStep(3));
+
+async function acceptCurves(){
+  if(!activeCrop || !resultCurves.length) return;
+  $("acceptCurvesBtn").disabled = true;
+  try{
+    await api("POST", "/api/accept_curves", {paper, crop: activeCrop, curves: resultCurves});
+    $("acceptStatus").textContent = `accepted ${resultCurves.length} curve(s) — Step 5 (label & save) lands in a later phase`;
+    $("acceptStatus").className = "muted";
+    await refreshCrops();
+  } catch(e){
+    $("acceptStatus").textContent = "Error: " + e.message; $("acceptStatus").className = "err";
+  }
+  $("acceptCurvesBtn").disabled = false;
+}
+$("acceptCurvesBtn").addEventListener("click", acceptCurves);
+
+// ---- step 4: hand-trace fallback (always reachable when the eye check fails) ----
+const TRACE_PALETTE = ["#2dd4bf","#f97316","#a78bfa","#f43f5e","#22c55e","#38bdf8","#eab308","#ec4899"];
+$("handTraceBtn").addEventListener("click", () => {
+  traceMode = true;
+  brush = measurement ? Math.max(3, Math.round(measurement.suggested_brush)) : 12;
+  $("brushRange").value = brush; $("brushVal").textContent = brush + " px";
+  $("extractCard").style.display = "none"; $("traceCard").style.display = "";
+  mode = "trace"; cv.style.cursor = "crosshair";
+  renderTraceCurveList(); redraw();
+});
+$("backToExtractBtn").addEventListener("click", () => {
+  traceMode = false;
+  $("traceCard").style.display = "none"; $("extractCard").style.display = "";
+  mode = "pan"; cv.style.cursor = "grab";
+  redraw();
+});
+$("brushRange").addEventListener("input", e => { brush = +e.target.value; $("brushVal").textContent = brush+" px"; redraw(); });
+$("addTraceCurve").addEventListener("click", () => {
+  const name = $("traceCurveName").value.trim() || `curve ${traceCurves.length+1}`;
+  traceCurves.push({name, color: TRACE_PALETTE[traceCurves.length % TRACE_PALETTE.length], strokes: []});
+  traceActive = traceCurves.length-1;
+  $("traceCurveName").value = "";
+  renderTraceCurveList(); redraw();
+});
+$("traceCurveName").addEventListener("keydown", e => { if(e.key==="Enter") $("addTraceCurve").click(); });
+function renderTraceCurveList(){
+  const list = $("traceCurveList"); list.innerHTML = "";
+  traceCurves.forEach((c,i) => {
+    const li = document.createElement("li");
+    if(i===traceActive) li.className = "active";
+    const n = c.strokes.reduce((s,st)=>s+st.pts.length,0);
+    li.innerHTML = `<span class="swatch" style="background:${c.color}"></span>
+      <span class="nm">${esc(c.name)}</span><span class="cnt">${n}</span>`;
+    const del = document.createElement("button"); del.textContent="✕"; del.title="delete";
+    del.onclick = ev => { ev.stopPropagation(); traceCurves.splice(i,1);
+      traceActive = Math.min(traceActive, traceCurves.length-1); renderTraceCurveList(); redraw(); };
+    li.appendChild(del);
+    li.onclick = () => { traceActive = i; renderTraceCurveList(); redraw(); };
+    list.appendChild(li);
+  });
+}
+async function extractFromGuides(){
+  const guides = traceCurves.filter(c => c.strokes.some(s => s.pts.length>1)).map(c => ({
+    name: c.name,
+    strokes: c.strokes.filter(s => s.pts.length>1)
+      .map(s => ({radius: s.radius, pts: s.pts.map(p => [Math.round(p[0]), Math.round(p[1])])})),
+  }));
+  if(!guides.length){ $("extractStatus").textContent = "draw at least one stroke first"; return; }
+  $("extractStatus").textContent = "extracting from guides…"; $("extractStatus").className = "muted";
+  try{
+    const out = await api("POST", "/api/trace", {paper, crop: activeCrop, guides});
+    resultCurves = out.curves;
+    traceMode = false; $("traceCard").style.display = "none"; $("extractCard").style.display = "";
+    mode = "pan"; cv.style.cursor = "grab";
+    renderCurveResults(resultCurves);
+    $("extractStatus").textContent = `${resultCurves.length} curve(s) from your guides`;
+    $("acceptCurvesBtn").disabled = resultCurves.length===0;
+    redraw();
+  } catch(e){
+    $("extractStatus").textContent = "Error: " + e.message; $("extractStatus").className = "err";
+  }
+}
+$("extractFromGuidesBtn").addEventListener("click", extractFromGuides);
+
 // ---- step rail ----
 function setStep(n){
   if(n===2 && !activeCrop) return;
-  if(n>=3) return;   // wired up in later phases (G4/G6)
+  if(n===3 && !calibSaved) return;
+  if(n===4 && !measurement) return;
+  if(n>=5) return;   // wired up in G6
   activeStep = n;
   [...$("stepRail").children].forEach(el => el.classList.toggle("active", +el.dataset.step===n));
   $("step1Cards").style.display = n===1 ? "" : "none";
   $("step2Cards").style.display = n===2 ? "" : "none";
-  mode = n===2 ? "calib" : "crop";
-  cv.style.cursor = mode==="calib" ? "cell" : "copy";
+  $("step3Cards").style.display = n===3 ? "" : "none";
+  $("step4Cards").style.display = n===4 ? "" : "none";
+  mode = n===2 ? "calib" : (n===4 && traceMode ? "trace" : (n===1 ? "crop" : "pan"));
+  cv.style.cursor = mode==="calib" ? "cell" : mode==="trace" ? "crosshair" : mode==="crop" ? "copy" : "grab";
   if(n===2) renderCalibGrid();
+  if(n===4) renderTraceCurveList();
   redraw();
 }
 $("stepRail").addEventListener("click", e => {
@@ -527,6 +782,15 @@ cv.addEventListener("pointerdown", e => {
     }
     return;
   }
+  if(mode==="trace"){
+    if(traceActive<0) return;
+    // the brush at THIS moment is recorded on the new stroke itself, so
+    // changing the slider mid-curve only affects strokes drawn after the
+    // change (see cvdigitize.guided.extract_near_guide's per-stroke radius)
+    drawing = true;
+    traceCurves[traceActive].strokes.push({radius: brush, pts: [toImage(sx,sy)]});
+    return;
+  }
   cropDragging = (e.altKey && cropRect) ? "exclude" : "crop";
   cropDragStart = toImage(sx,sy);
   if(cropDragging==="crop"){ cropRect=null; excludeRects=[]; updateCropButtons(); }
@@ -540,6 +804,12 @@ cv.addEventListener("pointermove", e => {
     redraw();
     return;
   }
+  if(drawing){
+    const st = traceCurves[traceActive].strokes;
+    st[st.length-1].pts.push(toImage(sx,sy));
+    redraw();
+    return;
+  }
   if(cropDragging){
     const cur = toImage(sx,sy);
     const rect = [Math.min(cropDragStart[0],cur[0]), Math.min(cropDragStart[1],cur[1]),
@@ -549,9 +819,10 @@ cv.addEventListener("pointermove", e => {
   }
 });
 cv.addEventListener("pointerup", () => {
-  panning=false;
+  panning=false; drawing=false;
   if(draggingAnchor){ draggingAnchor = null; renderCalibGrid(); updateSaveCalibButton(); return; }
-  cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"copy");
+  cv.style.cursor = mode==="pan"?"grab":mode==="calib"?"cell":mode==="trace"?"crosshair":"copy";
+  if(mode==="trace"){ renderTraceCurveList(); return; }
   if(cropDragging==="exclude" && pendingExcludeRect){
     const r = pendingExcludeRect; pendingExcludeRect = null;
     if(r[2]-r[0] > 4 && r[3]-r[1] > 4) excludeRects.push(r);
@@ -575,8 +846,13 @@ document.addEventListener("keydown", e => {
   if(e.code==="Space"){ spaceDown=true; cv.style.cursor="grab"; }
   if(e.key==="0"){ fitView(); redraw(); }
   if(e.key==="Enter" && activeStep===1 && !$("saveCropBtn").disabled) saveCrop();
+  if((e.key==="u"||e.key==="U") && mode==="trace" && traceActive>=0){
+    const st = traceCurves[traceActive].strokes;
+    if(st.length){ st.pop(); redraw(); renderTraceCurveList(); }
+  }
 });
-document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false; cv.style.cursor = mode==="pan"?"grab":(mode==="calib"?"cell":"copy"); } });
+document.addEventListener("keyup", e => { if(e.code==="Space"){ spaceDown=false;
+  cv.style.cursor = mode==="pan"?"grab":mode==="calib"?"cell":mode==="trace"?"crosshair":"copy"; } });
 
 // ---- rendering ----
 function redraw(){
@@ -618,10 +894,57 @@ function redraw(){
       ctx.font = "12px sans-serif"; ctx.fillText(k, x+9, y-4);
     });
   }
+  if((activeStep===3 || activeStep===4) && measurement){
+    ctx.fillStyle = "rgba(244,63,94,0.30)";
+    const xa = measurement.exclusion_band.x_axis;
+    let [x0,y0] = toScreen(xa.x_range[0], xa.y - xa.half_width);
+    let [x1,y1] = toScreen(xa.x_range[1], xa.y + xa.half_width);
+    ctx.fillRect(x0, y0, x1-x0, y1-y0);
+    const ya = measurement.exclusion_band.y_axis;
+    [x0,y0] = toScreen(ya.x - ya.half_width, ya.y_range[0]);
+    [x1,y1] = toScreen(ya.x + ya.half_width, ya.y_range[1]);
+    ctx.fillRect(x0, y0, x1-x0, y1-y0);
+  }
+  if(activeStep===4 && !traceMode && resultCurves.length){
+    const qcColors = ["#e6194b","#3cb44b","#4363d8","#f58231","#911eb4","#008080","#9a6324"];
+    resultCurves.forEach((c,i) => {
+      const pts = c.xy_px; if(!pts || pts.length<2) return;
+      ctx.strokeStyle = qcColors[i % qcColors.length]; ctx.lineWidth = 3;
+      ctx.lineJoin = ctx.lineCap = "round";
+      ctx.beginPath();
+      pts.forEach((p,k) => { const [x,y]=toScreen(p[0],p[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+      const spans = (c.fidelity && c.fidelity.off_ink_spans) || [];
+      ctx.strokeStyle = "#e74c3c"; ctx.lineWidth = 3; ctx.setLineDash([7,5]);
+      spans.forEach(sp => {
+        const [x0,y0] = toScreen(sp.start[0], sp.start[1]), [x1,y1] = toScreen(sp.end[0], sp.end[1]);
+        ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      });
+      ctx.setLineDash([]);
+    });
+  }
+  if(mode==="trace"){
+    traceCurves.forEach((c,i) => {
+      ctx.strokeStyle = c.color; ctx.lineJoin = ctx.lineCap = "round";
+      ctx.globalAlpha = i===traceActive ? 0.5 : 0.3;
+      c.strokes.forEach(st => { ctx.beginPath();
+        const r = st.radius || brush;
+        ctx.lineWidth = Math.max(2, (i===traceActive?r:r*0.7)*view.z*2.0);
+        st.pts.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+      ctx.globalAlpha = i===traceActive?1:0.6; ctx.lineWidth = i===traceActive?2:1.2;
+      c.strokes.forEach(st => { ctx.beginPath();
+        st.pts.forEach((pt,k)=>{ const [x,y]=toScreen(pt[0],pt[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+    });
+    ctx.globalAlpha = 1;
+  }
   ctx.restore();
   $("modehelp").textContent = !current ? "" : mode==="calib"
     ? "Click “set pt” then click the canvas to place a point, or drag an existing marker to fix it. Scroll = zoom, hold Space to pan."
-    : "Drag a box to crop. Alt+drag inside it to mask. Scroll = zoom, hold Space to pan.";
+    : mode==="trace"
+    ? "Pick a curve, then drag roughly along it. The shaded band is exactly what gets snapped to ink. Scroll = zoom, hold Space to pan."
+    : mode==="crop"
+    ? "Drag a box to crop. Alt+drag inside it to mask. Scroll = zoom, hold Space to pan."
+    : "Scroll = zoom, drag to pan.";
   $("zbadge").textContent = Math.round(view.z*100)+"%";
 }
 redraw();

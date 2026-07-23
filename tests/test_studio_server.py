@@ -279,3 +279,134 @@ def test_save_calibration_missing_crop_is_404(server, tmp_path):
                         {"paper": "paperNo2", "crop": "nope_crop1", "calibration": {}})
     assert status == 404
     assert "error" in out
+
+
+# --------------------------------------------------------------------------- #
+# G4: measure / autoextract / trace / accept_curves
+# --------------------------------------------------------------------------- #
+_CV_BOX = (60, 40, 340, 240)   # x0, y0, x1, y1 - the drawn axes frame
+_CV_CALIBRATION = {
+    "E1": {"px": [60, 240], "value": 0.0}, "E2": {"px": [340, 240], "value": 1.0},
+    "j1": {"px": [60, 240], "value": -100}, "j2": {"px": [60, 40], "value": 100},
+    "E_unit": "V", "E_ref": "RHE", "j_unit": "uA/cm2",
+}
+
+
+def _cv_crop_data_url() -> str:
+    """A framed axes box (thin, 2px-drawn line) with a wavy dark curve (3px
+    radius, so a visibly thicker stroke) inside - line_width should measure
+    noticeably larger than axis_width, and the curve should auto-extract."""
+    img = np.full((300, 400, 3), 255, np.uint8)
+    x0, y0, x1, y1 = _CV_BOX
+    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 0, 0), 2)
+    xs = np.arange(x0 + 10, x1 - 10)
+    ys = (140 + 60 * np.sin((xs - x0) / 40)).astype(int)
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 0, 0), -1)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperExtract"):
+    pdf = str(tmp_path / f"{paper_name}.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_crop", {
+        "paper": paper_name, "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, 400, 300], "excludeRects": [], "image": _cv_crop_data_url(),
+    })
+    assert status == 200
+    crop_name = out["crop"]
+    status, out = _post(base, "/api/save_calibration",
+                        {"paper": paper_name, "crop": crop_name, "calibration": _CV_CALIBRATION})
+    assert status == 200
+    return crop_name
+
+
+def test_measure_reports_line_wider_than_axis_and_persists(server, tmp_path):
+    base, workspace = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path)
+
+    status, out = _post(base, "/api/measure", {"paper": "paperExtract", "crop": crop_name})
+    assert status == 200
+    assert out["line_width"] > out["axis_width"] > 0
+    assert out["suggested_brush"] == round(max(3.0, 1.8 * out["line_width"]), 2)
+    assert "exclusion_band" in out
+
+    json_path = os.path.join(workspace, "paperExtract", "crops", crop_name + ".json")
+    with open(json_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["lineWidth"] == out["line_width"]
+    assert meta["axisWidth"] == out["axis_width"]
+
+
+def test_measure_without_calibration_is_400(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperNoCalib.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/save_crop", {
+        "paper": "paperNoCalib", "type": "single_cv", "source": "p0_img0.png",
+        "bbox": [0, 0, 10, 10], "excludeRects": [], "image": _tiny_crop_data_url(),
+    })
+    crop_name = out["crop"]
+    status, out = _post(base, "/api/measure", {"paper": "paperNoCalib", "crop": crop_name})
+    assert status == 400
+    assert "error" in out
+
+
+def test_autoextract_finds_the_curve_with_good_fidelity(server, tmp_path):
+    base, _ = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperExtract2")
+
+    status, out = _post(base, "/api/autoextract", {"paper": "paperExtract2", "crop": crop_name})
+    assert status == 200
+    assert out["curves"], "expected at least one extracted curve"
+    c = out["curves"][0]
+    assert len(c["xy_px"]) == len(c["xy_real"])
+    assert c["fidelity"]["score"] is not None and c["fidelity"]["score"] >= 70
+    assert "measurement" in out and out["measurement"]["line_width"] > 0
+
+
+def test_autoextract_missing_crop_is_404(server, tmp_path):
+    base, _ = server
+    pdf = str(tmp_path / "paperExtractNo.pdf")
+    _make_pdf_with_embedded_image(pdf)
+    _post(base, "/api/open_paper", {"pdf_path": pdf})
+    status, out = _post(base, "/api/autoextract", {"paper": "paperExtractNo", "crop": "nope_crop1"})
+    assert status == 404
+    assert "error" in out
+
+
+def test_trace_snaps_guide_to_ink(server, tmp_path):
+    base, _ = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperTrace")
+
+    x0, y0, x1, y1 = _CV_BOX
+    xs = np.linspace(x0 + 10, x1 - 10, 12)
+    guide_pts = [[float(x), float(140 + 60 * np.sin((x - x0) / 40))] for x in xs]
+    guides = [{"name": "hand", "radius": 10, "strokes": [{"radius": 10, "pts": guide_pts}]}]
+
+    status, out = _post(base, "/api/trace",
+                        {"paper": "paperTrace", "crop": crop_name, "guides": guides})
+    assert status == 200
+    assert out["curves"], "expected the guide to snap onto the drawn curve"
+    c = out["curves"][0]
+    assert c["name"] == "hand"
+    assert c["fidelity"]["score"] is not None
+
+
+def test_accept_curves_persists_onto_crop(server, tmp_path):
+    base, workspace = server
+    crop_name = _seed_calibrated_cv_crop(base, tmp_path, paper_name="paperAccept")
+
+    curves = [{"name": "dark", "rgb": [0.1, 0.1, 0.1],
+              "xy_px": [[0, 0], [1, 1]], "xy_real": [[0.0, -100.0], [0.01, -99.0]]}]
+    status, out = _post(base, "/api/accept_curves",
+                        {"paper": "paperAccept", "crop": crop_name, "curves": curves})
+    assert status == 200
+    assert out["ok"] is True
+
+    status, out = _get(base, "/api/list_crops?paper=paperAccept")
+    assert out["crops"][0]["curves"] == curves

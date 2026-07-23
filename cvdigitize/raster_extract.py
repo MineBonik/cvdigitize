@@ -438,6 +438,137 @@ def crop_tick_labels(image: np.ndarray, frame_px: tuple[int, int, int, int],
 
 
 # --------------------------------------------------------------------------- #
+# Line vs. axis width (CV Studio Step 3 — don't confuse curve ink with axis ink)
+# --------------------------------------------------------------------------- #
+def _run_length_through(line: np.ndarray, pos: int) -> int:
+    """Length of the contiguous True run in 1D boolean ``line`` that contains
+    index ``pos`` (0 if ``pos`` is out of range or not True there)."""
+    n = len(line)
+    if pos < 0 or pos >= n or not line[pos]:
+        return 0
+    lo = pos
+    while lo > 0 and line[lo - 1]:
+        lo -= 1
+    hi = pos
+    while hi < n - 1 and line[hi + 1]:
+        hi += 1
+    return hi - lo + 1
+
+
+def _axis_thickness(dark: np.ndarray, *, fixed_index: int, span: tuple[int, int],
+                    along_columns: bool, n_samples: int = 25) -> float:
+    """Robust thickness of a straight axis line at ``fixed_index``.
+
+    ``along_columns=True`` measures a HORIZONTAL axis (fixed row): at each
+    sampled column, the vertical dark-run through that row. ``along_columns=
+    False`` measures a VERTICAL axis (fixed column): at each sampled row, the
+    horizontal dark-run through that column. A curve crossing the axis makes a
+    same-column/row run much longer at that one sample, so the low (25th)
+    percentile over many samples estimates the clean axis-only thickness
+    rather than getting pulled up by crossings.
+    """
+    lo, hi = sorted(span)
+    if hi - lo < 4:
+        return 1.0
+    margin = max(2, int(0.03 * (hi - lo)))
+    lo2, hi2 = (lo + margin, hi - margin) if hi - lo > 2 * margin else (lo, hi)
+    positions = np.unique(np.linspace(lo2, hi2, min(n_samples, hi2 - lo2 + 1)).astype(int))
+    runs = []
+    for p in positions:
+        line = dark[:, p] if along_columns else dark[p, :]
+        r = _run_length_through(line, fixed_index)
+        if r > 0:
+            runs.append(r)
+    return float(np.percentile(runs, 25)) if runs else 1.0
+
+
+def _calib_anchor_points(calibration: dict) -> tuple:
+    try:
+        return (calibration["E1"]["px"], calibration["E2"]["px"],
+                calibration["j1"]["px"], calibration["j2"]["px"])
+    except (KeyError, TypeError):
+        raise ValueError("calibration must have E1/E2/j1/j2 anchors with 'px'")
+
+
+def exclusion_mask(shape: tuple, band: dict) -> np.ndarray:
+    """Rebuild the boolean pixel mask a compact ``exclusion_band`` dict describes."""
+    h, w = shape[:2]
+    m = np.zeros((h, w), bool)
+    xa = band.get("x_axis")
+    if xa:
+        y0 = max(0, int(round(xa["y"] - xa["half_width"])))
+        y1 = min(h, int(round(xa["y"] + xa["half_width"])) + 1)
+        x0, x1 = sorted(xa["x_range"]); x0 = max(0, x0); x1 = min(w, x1 + 1)
+        m[y0:y1, x0:x1] = True
+    ya = band.get("y_axis")
+    if ya:
+        x0 = max(0, int(round(ya["x"] - ya["half_width"])))
+        x1 = min(w, int(round(ya["x"] + ya["half_width"])) + 1)
+        y0, y1 = sorted(ya["y_range"]); y0 = max(0, y0); y1 = min(h, y1 + 1)
+        m[y0:y1, x0:x1] = True
+    return m
+
+
+def _median_stroke_width(mask: np.ndarray, *, min_area: int = 25) -> float:
+    """Median (ink-area / skeleton-length) over the mask's significant
+    components — the same thinness measure :func:`_mask_to_curve` gates on,
+    here read out as a number instead of used as a pass/fail threshold."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    widths = []
+    for i in range(1, n):
+        if int(stats[i, cv2.CC_STAT_AREA]) < min_area:
+            continue
+        skel_len = int(skeletonize_curve(labels == i).sum())
+        if skel_len > 0:
+            widths.append(stats[i, cv2.CC_STAT_AREA] / skel_len)
+    return float(np.median(widths)) if widths else 2.0
+
+
+def measure_line_and_axis_width(crop_rgb: np.ndarray, calibration: dict) -> dict:
+    """Measure curve-line width vs. axis-line width, and the axis-exclusion band.
+
+    The axes are the loci THROUGH the calibration points (E1/E2 pin the
+    x-axis row, j1/j2 pin the y-axis column) — precise because calibration
+    already located them, unlike guessing from image structure. Extraction
+    can then mask ``exclusion_band`` out of the ink before tracing so a solid
+    axis line is never mistaken for curve data. ``line_width`` (measured on
+    the non-axis ink) drives adaptive defaults: brush ~= 1.8x, on-ink
+    tolerance ~= 1x (see STUDIO_PLAN.md §8).
+    """
+    from .guided import _ink_mask
+
+    e1, e2, j1, j2 = _calib_anchor_points(calibration)
+    x_axis_row = int(round((e1[1] + e2[1]) / 2))
+    y_axis_col = int(round((j1[0] + j2[0]) / 2))
+    x_span = (int(round(e1[0])), int(round(e2[0])))
+    y_span = (int(round(j1[1])), int(round(j2[1])))
+
+    gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
+    dark = gray < 220
+
+    axis_w_x = _axis_thickness(dark, fixed_index=x_axis_row, span=x_span, along_columns=True)
+    axis_w_y = _axis_thickness(dark, fixed_index=y_axis_col, span=y_span, along_columns=False)
+    axis_width = float(np.median([axis_w_x, axis_w_y]))
+
+    half = max(1.0, axis_width / 2.0 + 1.0)   # measured half-thickness + a small margin
+    exclusion_band = {
+        "x_axis": {"y": x_axis_row, "half_width": half, "x_range": [min(x_span), max(x_span)]},
+        "y_axis": {"x": y_axis_col, "half_width": half, "y_range": [min(y_span), max(y_span)]},
+    }
+
+    ink = _ink_mask(crop_rgb)
+    non_axis_ink = ink & ~exclusion_mask(crop_rgb.shape, exclusion_band)
+    line_width = round(_median_stroke_width(non_axis_ink), 2)
+
+    return {
+        "line_width": line_width,
+        "axis_width": round(axis_width, 2),
+        "suggested_brush": round(max(3.0, 1.8 * line_width), 2),
+        "exclusion_band": exclusion_band,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 2-3. Isolate the curve
 # --------------------------------------------------------------------------- #
 def mask_dark_curve(rgb: np.ndarray, *, value_thresh: float = 0.55) -> np.ndarray:

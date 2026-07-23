@@ -124,6 +124,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_autocalibrate(body)
             elif path == "/api/save_calibration":
                 self._handle_save_calibration(body)
+            elif path == "/api/measure":
+                self._handle_measure(body)
+            elif path == "/api/autoextract":
+                self._handle_autoextract(body)
+            elif path == "/api/trace":
+                self._handle_trace(body)
+            elif path == "/api/accept_curves":
+                self._handle_accept_curves(body)
             else:
                 self._send_error_json("not found", 404)
         except StudioError as e:
@@ -180,6 +188,36 @@ class Handler(BaseHTTPRequestHandler):
         if not paper or not crop or calibration is None:
             raise StudioError("paper, crop and calibration are required", 400)
         ws.set_crop_calibration(self.workspace_dir, paper, crop, calibration)
+        self._send_json({"ok": True})
+
+    def _handle_measure(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        if not paper or not crop:
+            raise StudioError("paper and crop are required", 400)
+        out = pipeline.measure_crop(self.workspace_dir, paper, crop)
+        self._send_json(out)
+
+    def _handle_autoextract(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        if not paper or not crop:
+            raise StudioError("paper and crop are required", 400)
+        out = pipeline.autoextract_crop(self.workspace_dir, paper, crop)
+        self._send_json(out)
+
+    def _handle_trace(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        guides = body.get("guides")
+        if not paper or not crop or not guides:
+            raise StudioError("paper, crop and guides are required", 400)
+        out = pipeline.trace_crop(self.workspace_dir, paper, crop, guides)
+        self._send_json(out)
+
+    def _handle_accept_curves(self, body: dict):
+        paper, crop = body.get("paper"), body.get("crop")
+        curves = body.get("curves")
+        if not paper or not crop or curves is None:
+            raise StudioError("paper, crop and curves are required", 400)
+        pipeline.accept_curves(self.workspace_dir, paper, crop, curves)
         self._send_json({"ok": True})
 
 
