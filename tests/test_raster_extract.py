@@ -11,6 +11,7 @@ from cvdigitize.raster_extract import (
     _erase_straight_lines, extract_frameless_curve,
     _merge_boxes, locate_plot_regions, extract_scan_curves,
     _extract_from_frame, extract_from_cropped_image,
+    _axis_thickness, measure_line_and_axis_width,
 )
 
 
@@ -214,6 +215,48 @@ def test_detect_all_frames_ignores_thick_curved_region():
 # --------------------------------------------------------------------------- #
 # tick detection
 # --------------------------------------------------------------------------- #
+def test_axis_thickness_uses_min_not_percentile_against_many_crossings():
+    """A curve crossing the axis inflates the local dark-run length at that
+    ONE sample but can never shrink it below the true axis thickness -- so
+    with several crossings spread across the sampled span (a real bug: a CV
+    with ~5 crossings pulled a 25th-percentile estimate up to 136px instead
+    of the true ~2-3px), only the minimum over samples reliably recovers the
+    thin axis thickness, since a single clean sample anywhere is enough."""
+    h, w = 200, 400
+    img = np.full((h, w, 3), 255, np.uint8)
+    axis_row = 100
+    cv2.line(img, (20, axis_row), (380, axis_row), (0, 0, 0), 2)   # thin 2px axis
+    for x in (60, 120, 180, 240, 300, 340):    # several thick crossings (a wiggly curve)
+        cv2.line(img, (x, axis_row - 15), (x, axis_row + 15), (0, 0, 0), 6)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    dark = gray < 220
+    thickness = _axis_thickness(dark, fixed_index=axis_row, span=(20, 380), along_columns=True)
+    assert thickness <= 3
+
+
+def test_measure_line_and_axis_width_not_fooled_by_many_axis_crossings():
+    """End-to-end: a calibrated crop whose curve crosses the x-axis several
+    times must still report a thin axis_width, not one inflated by the
+    crossings (the real regression, exact numbers: 136px reported instead
+    of ~2.5px)."""
+    h, w = 300, 500
+    img = np.full((h, w, 3), 255, np.uint8)
+    axis_row, axis_col = 200, 60
+    cv2.line(img, (axis_col, axis_row), (460, axis_row), (0, 0, 0), 2)
+    cv2.line(img, (axis_col, 20), (axis_col, axis_row), (0, 0, 0), 2)
+    xs = np.arange(80, 440)
+    ys = (axis_row - 90 * np.sin((xs - 80) / 25)).astype(int)   # many crossings
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 0, 0), -1)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    calibration = {
+        "E1": {"px": [axis_col, axis_row], "value": 0.0}, "E2": {"px": [440, axis_row], "value": 1.0},
+        "j1": {"px": [axis_col, axis_row], "value": -100}, "j2": {"px": [axis_col, 20], "value": 100},
+    }
+    out = measure_line_and_axis_width(rgb, calibration)
+    assert out["axis_width"] <= 4
+
+
 def test_detect_axis_ticks_finds_evenly_spaced_ticks():
     # Ticks inset from the frame corners, like a real axes (matplotlib always
     # leaves a margin) — a tick drawn exactly at the corner is indistinguishable
