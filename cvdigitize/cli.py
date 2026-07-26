@@ -679,7 +679,6 @@ def _extract_vector(args, pdf, page, stem, out_dir):
         plt.close(fig)
 
         from .qc import write_qc
-        from .postprocess import order_curve
         # one ordered polyline per curve (pixel space = PDF pts x3), so the
         # fidelity check sees the real curve, not jumps between shuffled sub-paths.
         qc_curves = [{"name": pc["group"].name,
@@ -773,6 +772,24 @@ def cmd_studio(args):
     from .studio.server import run
     run(workspace_dir=args.workspace, port=args.port, open_browser=not args.no_open)
     return 0
+
+
+def cmd_vector_calibrate(args):
+    """Vector-only workflow: scan a folder for CV panels, then calibrate by hand.
+
+    Deliberately narrower than ``batch``: it only ever touches native vector
+    figures (where extraction is exact and needs no human tracing) and it stops
+    at the one thing the machine cannot reliably read — what the axis numbers
+    are. Every panel is presented with its curves drawn over the original
+    figure so those numbers can be confirmed against the picture.
+    """
+    from .veccal.server import run
+    return run(args.source, args.work,
+               args.out or os.path.join(args.work, "curves"),
+               port=args.port, rescan=args.rescan,
+               cv_threshold=args.cv_threshold,
+               open_browser=not args.no_open,
+               resample=args.resample, resample_mode=args.resample_mode)
 
 
 def cmd_batch(args):
@@ -967,10 +984,37 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--workspace", default=os.path.join("data", "workspace"))
     ps.add_argument("--no-open", action="store_true", help="don't auto-open a browser tab")
     ps.set_defaults(func=cmd_studio)
+
+    pv = sub.add_parser("vector-calibrate",
+                        help="vector figures only: find every CV panel in a folder, "
+                             "then calibrate and name them one by one in the browser")
+    pv.add_argument("--in", dest="source", default=None, metavar="FOLDER",
+                    help="folder of PDFs to scan (needed on the first run; "
+                         "omitted afterwards to resume the existing scan)")
+    pv.add_argument("--work", default=os.path.join("data", "out", "vector_curated"),
+                    help="where the scan and progress live "
+                         "(default data/out/vector_curated)")
+    pv.add_argument("--out", default=None,
+                    help="where calibrated curves are written "
+                         "(default <work>/curves)")
+    pv.add_argument("--rescan", action="store_true",
+                    help="re-detect panels even if a scan already exists "
+                         "(keeps the status and names you already entered)")
+    pv.add_argument("--cv-threshold", type=float, default=0.08,
+                    help="min loop score for a panel to count as a CV (0..1)")
+    pv.add_argument("--resample", type=int, default=1000,
+                    help="resample point count per curve (0=off)")
+    pv.add_argument("--resample-mode", choices=["arclength", "uniform-E"],
+                    default="arclength")
+    pv.add_argument("--port", type=int, default=8756)
+    pv.add_argument("--no-open", action="store_true",
+                    help="don't auto-open a browser tab")
+    pv.set_defaults(func=cmd_vector_calibrate)
     return p
 
 
-_KNOWN_COMMANDS = {"info", "extract", "grid", "batch", "studio", "-h", "--help"}
+_KNOWN_COMMANDS = {"info", "extract", "grid", "batch", "studio",
+                   "vector-calibrate", "-h", "--help"}
 
 
 def _with_implicit_extract(argv: list[str]) -> list[str]:
