@@ -81,6 +81,20 @@
     border:1px solid rgba(0,0,0,.25); }
   .curve-row .meta { font-size:11.5px; color:var(--faint); margin-top:3px; }
 
+  /* paper / caption panel — where the scan rate and electrolyte actually live */
+  .paper { font-size:12.5px; }
+  .paper dl { display:grid; grid-template-columns:auto 1fr; gap:3px 10px; margin:0 0 10px; }
+  .paper dt { color:var(--faint); white-space:nowrap; }
+  .paper dd { margin:0; overflow-wrap:anywhere; }
+  .paper a { color:var(--accent); }
+  .paper .caption { max-height:190px; overflow:auto; background:var(--bg);
+    border:1px solid var(--line); border-radius:6px; padding:9px 11px;
+    line-height:1.5; white-space:pre-wrap; }
+  .paper mark { background:rgba(226,172,92,.42); color:inherit; font-weight:700;
+    border-radius:3px; padding:0 2px; }
+  .paper .none { color:var(--faint); font-style:italic; }
+  .paper .use { margin-top:8px; }
+
   .hint { font-size:12px; color:var(--muted); margin:0 0 10px; }
   .snap-hint { font-size:11.5px; color:var(--faint); margin-top:6px; }
   #msg { padding:9px 12px; border-radius:7px; font-size:13px; margin-bottom:12px; display:none; }
@@ -181,6 +195,11 @@
       <div class="body" id="curveList"></div>
     </div>
 
+    <div class="card" style="margin-bottom:16px">
+      <h2>From the paper</h2>
+      <div class="body paper" id="paperInfo"></div>
+    </div>
+
     <div class="card">
       <h2>Panels</h2>
       <div class="navlist" id="navList"></div>
@@ -220,7 +239,7 @@ function draw() {
   // extracted curves, in their own colours, over the original figure
   for (const c of u.curves) {
     const pts = c.loop_pdf;
-    if (!pts || pts.length < 2) continue;
+    if (!pts || pts.length < 2 || c.include === false) continue;
     const [r, gg, b] = c.rgb.map(v => Math.round(v * 255));
     g.beginPath();
     g.moveTo(toCropX(u, pts[0][0]), toCropY(u, pts[0][1]));
@@ -302,12 +321,100 @@ function syncPos() {
     + `  ·  ${(u.y_ticks || []).length} tick(s) detected`;
 }
 
+/* ---------- paper / caption ------------------------------------------
+   The scan rate, electrolyte and reference electrode are printed in the figure
+   caption, not on the axes, so the caption is shown here rather than making the
+   user go back to the PDF. Anything that looks like a scan rate is highlighted
+   and offered as a one-click fill for the scan-rate box. */
+const RATE_RE = /(\d+(?:[.,]\d+)?)\s*(mV|V|µV|uV)\s*(?:\/|\s+per\s+|\s)\s*(s|sec|second|min|minute)\b/gi;
+
+function renderPaper(u) {
+  const box = $("paperInfo");
+  box.textContent = "";
+  const paper = u.paper_meta || {}, fig = u.figure_meta || {};
+
+  const dl = document.createElement("dl");
+  const row = (label, value, href) => {
+    if (!value) return;
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd");
+    if (href) {
+      const a = document.createElement("a");
+      a.href = href; a.target = "_blank"; a.rel = "noreferrer noopener";
+      a.textContent = value; dd.appendChild(a);
+    } else dd.textContent = value;
+    dl.append(dt, dd);
+  };
+  row("paper", paper.title);
+  row("authors", paper.authors);
+  row("journal", [paper.journal, paper.year].filter(Boolean).join(" "));
+  row("doi", paper.doi, paper.url);
+  row("file", paper.pdf || (u.pdf || "").split(/[\\/]/).pop());
+  row("figure", u.figure ? "figure " + u.figure : "");
+  row("scan rate", fig.scanRate
+      ? fig.scanRate + (fig.scanRateFoundIn && fig.scanRateFoundIn !== "this page"
+                        ? "  (" + fig.scanRateFoundIn + ")" : "")
+      : "");
+  row("electrolyte", (fig.electrolytes || []).join(", "));
+  row("reference", fig.referenceElectrode);
+  row("temperature", fig.temperature);
+  if (dl.children.length) box.appendChild(dl);
+
+  const caption = (fig.caption || "").trim();
+  if (!caption) {
+    const p = document.createElement("p");
+    p.className = "none";
+    p.textContent = "No caption text found on this page.";
+    box.appendChild(p);
+    return;
+  }
+
+  // Highlight scan rates inside the caption without using innerHTML on text
+  // that came out of a PDF.
+  const div = document.createElement("div");
+  div.className = "caption";
+  let at = 0, firstRate = "";
+  RATE_RE.lastIndex = 0;
+  for (let m; (m = RATE_RE.exec(caption)); ) {
+    div.append(caption.slice(at, m.index));
+    const mk = document.createElement("mark");
+    mk.textContent = m[0];
+    div.appendChild(mk);
+    if (!firstRate) firstRate = m[0].replace(/\s+/g, " ").trim();
+    at = m.index + m[0].length;
+  }
+  div.append(caption.slice(at));
+  box.appendChild(div);
+
+  if (firstRate) {
+    const b = document.createElement("button");
+    b.className = "use";
+    b.textContent = `Use "${firstRate}" as the scan rate`;
+    b.addEventListener("click", () => { $("scanRate").value = firstRate; });
+    box.appendChild(b);
+  }
+}
+
 /* ---------- render one panel ---------------------------------------- */
-function show(i) {
+async function show(i) {
   if (!STATE.units.length) return;
   STATE.i = Math.max(0, Math.min(STATE.units.length - 1, i));
   const u = unit();
   STATE.pick = null;
+  // Point arrays are fetched per panel, not shipped in the index — the whole
+  // corpus at once was 46 MB and made the page crawl.
+  if (!u.curves.some(c => c.loop_pdf)) {
+    try {
+      const r = await fetch("/api/panel?uid=" + encodeURIComponent(u.uid));
+      const j = await r.json();
+      if (j.unit) {
+        j.unit.curves.forEach((c, k) => {
+          if (u.curves[k]) u.curves[k].loop_pdf = c.loop_pdf;
+        });
+      }
+    } catch (e) { /* draw the figure without the traces rather than nothing */ }
+    if (unit() !== u) return;          // user moved on while we were fetching
+  }
   $("msg").className = ""; $("clickHint").textContent = "";
 
   $("pUid").textContent = u.uid;
@@ -351,7 +458,7 @@ function show(i) {
   }
   $("scanRate").value = (u.figure_meta && u.figure_meta.scanRate) || "";
 
-  renderCurves(u); renderNav(); syncPos();
+  renderCurves(u); renderNav(); renderPaper(u); syncPos();
 
   STATE.img = new Image();
   STATE.img.onload = draw;
@@ -375,25 +482,49 @@ function renderCurves(u) {
     const row = document.createElement("div");
     row.className = "curve-row";
     row.innerHTML = `
-      <div class="swatch" style="background:rgb(${r},${g},${b})"></div>
+      <div>
+        <div class="swatch" style="background:rgb(${r},${g},${b})"></div>
+        <input type="checkbox" data-ck="${k}" title="include this curve when saving"
+               style="margin-top:8px">
+      </div>
       <div>
         <label>file name</label>
-        <input type="text" data-cn="${k}" value="">
+        <input type="text" data-cn="${k}">
         <label style="margin-top:7px">sample / legend (optional)</label>
-        <input type="text" data-cs="${k}" value="" placeholder="e.g. Pt(111) in 0.1 M HClO4">
-        <div class="meta">${c.color_label} · ${c.n_points} pts · loop score ${c.loopiness}</div>
+        <input type="text" data-cs="${k}" placeholder="e.g. Pt(111) in 0.1 M HClO4">
+        <div class="meta" data-cm="${k}"></div>
       </div>`;
     box.appendChild(row);
     row.querySelector(`[data-cn="${k}"]`).value = c.name || "";
     row.querySelector(`[data-cs="${k}"]`).value = c.sample || "";
+    const keep = row.querySelector(`[data-ck="${k}"]`);
+    keep.checked = c.include !== false;
+    keep.addEventListener("change", () => { c.include = keep.checked; draw(); });
+
+    // A loop score near zero means the trace never closed — in a CV panel that
+    // is usually a different quantity sharing the axes (an integrated charge or
+    // Tafel line), and its j values would be wrong under this calibration. Two
+    // such curves were saved by hand before this warning existed.
+    const meta = row.querySelector(`[data-cm="${k}"]`);
+    meta.textContent = `${c.color_label} · ${c.n_points} pts · loop score ${c.loopiness}`;
+    if (Number(c.loopiness) < 0.02) {
+      const w = document.createElement("div");
+      w.style.color = "var(--warn)";
+      w.style.fontWeight = "600";
+      w.textContent = "not a closed loop — probably not a CV; untick to leave it out";
+      meta.appendChild(w);
+    }
   });
 }
+
+const included = () => unit().curves.filter(c => c.include !== false);
 
 function collectCurves() {
   return unit().curves.map((c, k) => ({
     color: c.color,
     name: (document.querySelector(`[data-cn="${k}"]`) || {}).value || c.name,
     sample: (document.querySelector(`[data-cs="${k}"]`) || {}).value || "",
+    include: c.include !== false,
   }));
 }
 

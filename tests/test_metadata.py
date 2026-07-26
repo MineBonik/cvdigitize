@@ -136,3 +136,50 @@ def test_detect_plot_legend_empty_when_no_legend(tmp_path):
     fig.savefig(pdf); plt.close(fig)
     groups = extract_color_groups(pdf, 0, min_points=5)
     assert detect_plot_legend(pdf, 0, groups) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Scan rate: papers state the sweep rate once, in the experimental section, and
+# the figure caption then says nothing about it. Searching only the figure's own
+# page left scanRate empty for most of the reference corpus.
+# --------------------------------------------------------------------------- #
+def _two_page_pdf(path, page0, page1):
+    import fitz
+    doc = fitz.open()
+    for body in (page0, page1):
+        page = doc.new_page()
+        page.insert_textbox(fitz.Rect(40, 40, 550, 700), body, fontsize=9)
+    doc.save(path)
+    doc.close()
+
+
+def test_scan_rate_found_on_the_figure_page_is_labelled_as_such(tmp_path):
+    from cvdigitize.metadata import extract_figure_metadata
+    pdf = str(tmp_path / "a.pdf")
+    _two_page_pdf(pdf, "Experimental. Nothing here.",
+                  "Figure 2. Voltammograms of Pt(111). Scan rate: 50 mV/s.")
+    meta = extract_figure_metadata(pdf, 1)
+    assert meta.scan_rate == "50 mV/s"
+    assert meta.scan_rate_source == "this page"
+    assert meta.as_dict()["scanRateFoundIn"] == "this page"
+
+
+def test_scan_rate_falls_back_to_the_rest_of_the_paper(tmp_path):
+    from cvdigitize.metadata import extract_figure_metadata
+    pdf = str(tmp_path / "b.pdf")
+    _two_page_pdf(pdf, "Experimental. CVs were recorded at 0.050 V s-1 in Ar.",
+                  "Figure 3. Voltammograms of Pt(111) in 0.1 M HClO4.")
+    meta = extract_figure_metadata(pdf, 1)
+    assert meta.scan_rate == "0.050 V/s"
+    # flagged, because it may belong to a different measurement in the paper
+    assert "elsewhere" in meta.scan_rate_source
+    assert "elsewhere" in meta.as_dict()["scanRateFoundIn"]
+
+
+def test_no_scan_rate_anywhere_stays_empty(tmp_path):
+    from cvdigitize.metadata import extract_figure_metadata
+    pdf = str(tmp_path / "c.pdf")
+    _two_page_pdf(pdf, "No rates mentioned.", "Figure 1. A schematic.")
+    meta = extract_figure_metadata(pdf, 1)
+    assert meta.scan_rate == "" and meta.scan_rate_source == ""
+    assert "scanRate" not in meta.as_dict()
