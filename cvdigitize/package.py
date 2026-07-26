@@ -120,9 +120,46 @@ def _to_yaml(obj, indent: int = 0) -> str:
     return pad + _scalar(obj) + "\n"
 
 
+#: Characters/patterns that stop a YAML plain (unquoted) scalar from being read
+#: back as the string we wrote. ``": "`` is the dangerous one in practice: a
+#: curve label like ``red: Pt(111)`` or a caption containing a newline used to
+#: be emitted bare, and the file then failed to parse at all
+#: ("mapping values are not allowed here") — the sidecar is meant to be
+#: machine-read by echemdb, so that made the metadata worthless.
+_YAML_UNSAFE = (": ", " #", "\n", "\r", "\t", '"', "'", "\\")
+_YAML_UNSAFE_LEADING = "-?:,[]{}#&*!|>%@`\"' "
+#: Plain scalars that YAML 1.1 readers coerce to a non-string type.
+_YAML_RESERVED = {"true", "false", "yes", "no", "on", "off", "null", "~", ""}
+
+
+def _needs_quotes(s: str) -> bool:
+    if s.strip() != s or s.lower() in _YAML_RESERVED:
+        return True
+    if s[0] in _YAML_UNSAFE_LEADING or s.endswith(":"):
+        return True
+    if any(bad in s for bad in _YAML_UNSAFE):
+        return True
+    # A string that reads back as a number must be quoted to stay a string.
+    try:
+        float(s)
+    except ValueError:
+        return False
+    return True
+
+
 def _scalar(v) -> str:
+    """One YAML scalar, quoted whenever a plain one would not round-trip.
+
+    Quoting uses ``json.dumps`` because JSON is a subset of YAML 1.2, so its
+    double-quoted form (with ``\\n`` escapes and \\u escapes) is already valid
+    YAML — no separate escaping logic to get wrong.
+    """
+    if isinstance(v, bool):
+        return "true" if v else "false"
     if isinstance(v, str):
-        return v if v != "" else '""'
+        return json.dumps(v, ensure_ascii=False) if _needs_quotes(v) else v
+    if v is None:
+        return "null"
     return str(v)
 
 
