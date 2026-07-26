@@ -35,6 +35,33 @@ type the venv path every time — `cvdigitize.bat info mypaper.pdf` instead of
 `.venv\Scripts\python.exe -m cvdigitize info mypaper.pdf`. Both do the same
 thing; use whichever your shell prefers.
 
+### Working through a folder of vector papers — the recommended route
+
+If your papers are native-vector PDFs (the figure is real path geometry, not a
+picture), this is the fastest path from a folder to citable data:
+
+```powershell
+.\cvdigitize.bat vector-calibrate --in data\literature_Vladislav
+```
+
+It scans every PDF for vector CV panels, extracts each curve mathematically,
+then opens a browser page that walks the panels **one at a time**. For each
+panel you see the original figure with the extracted curves drawn on top, the
+calibration already filled in wherever the tool could read the axis numbers
+(real text tick labels, else OCR of the detected ticks), and one editable name
+per curve. Press **Save & next** and that panel's CSV + JSON + YAML are written
+immediately, so stopping half way loses nothing — re-run the same command to
+resume.
+
+Calibration is **per panel, not per curve**: every curve inside a panel shares
+its axes, so you confirm the numbers once and all of its curves come out in real
+units. Where the tool could not read the axis, click a tick on each axis (clicks
+snap to detected ticks) and type its value.
+
+Deliberately narrower than `batch`: it only ever touches vector figures, where
+extraction is exact and needs no hand-tracing. For scanned/raster figures use
+`studio` instead.
+
 ## Status
 
 | Milestone | What it does | State |
@@ -43,6 +70,7 @@ thing; use whichever your shell prefers.
 | **M1** | Loop ordering, axis calibration, arc-length/uniform-E resampling, echemdb packaging, CLI | done & verified |
 | **M2** | Auto vector/raster classify + colour/brightness-trace for rasterized figures, incl. multi-panel auto-detection, tiling-strip merging, closed **and L-shaped (despined)** axes, automatic tick-mark finding, and **multi-colour curve splitting by hue** (crossing-tolerant) | done & verified |
 | **M3** | Automatic calibration | done for PDFs with live figure text; assisted (4 typed numbers) everywhere else |
+| **V** | `vector-calibrate`: vector-only folder run — auto-detect every vector CV panel, name its curves, confirm each panel's axes in the browser, write echemdb datapackages as you go (incl. DOI/title/journal in the YAML) | done & verified |
 
 ### Calibration — three tiers, tried in order
 
@@ -91,14 +119,25 @@ paper's most CV-like figure page automatically. This is a triage signal, not a
 perfect classifier — a genuinely peak-shaped CV can score low — so it never
 deletes data silently, only selects/orders.
 
-### Not done: true OCR of tick labels
+### OCR of tick labels — optional, and never authoritative
 
-Reading the axis tick *numbers* on a raster figure would need a real OCR engine
-(tesseract/easyocr), which isn't available in this environment. A self-contained
-template matcher was prototyped and rejected: it isn't reliable enough even on
-matplotlib's own font, and a mis-read tick would silently corrupt the
-calibration. Instead the tool auto-detects tick *positions* and crops zoomed
-label images, so you read two numbers per axis — reliable, no silent errors.
+A self-contained template matcher was prototyped and rejected: it isn't reliable
+enough even on matplotlib's own font, and a mis-read tick would silently corrupt
+the calibration. So the baseline everywhere is safe by construction — the tool
+auto-detects tick *positions* and crops zoomed label images, and you read two
+numbers per axis.
+
+On top of that, `cvdigitize/ocr.py` will use **Tesseract if it is installed**
+(`ocr.available()` reports whether it is; nothing else changes if it isn't). It
+is deliberately strict: an axis is only read when *both* of its outer labels
+come back above a confidence floor, so it either reads an axis fully or not at
+all — it never half-calibrates.
+
+`vector-calibrate` uses it for **pre-fill only**. The numbers land in the form
+next to a picture of the curve on its own axes, and a human confirms them before
+anything is written, which is what makes an OCR mistake visible rather than
+silent. On the reference corpus most figures outline their axis text, so this is
+the difference between "type four numbers" and "check four numbers".
 
 ## Verified results
 
@@ -270,6 +309,13 @@ cvdigitize batch "data\corpus"
 #   -> data\out\_batch\index.html : one card per paper (figure type, candidate
 #      curves, loop-score confidence). Great for triaging many papers fast.
 #      Recreate the sample corpus with: python scripts\fetch_corpus.py
+
+# 9) VECTOR-ONLY folder run: every vector CV panel, calibrated by hand in the
+#    browser, one panel at a time (see "Working through a folder" above).
+#    Writes each panel's datapackages on save; re-run to resume where you left off.
+cvdigitize vector-calibrate --in "data\literature_Vladislav"
+#   --rescan     re-detect panels, keeping the status and names you entered
+#   --out DIR    where curves land (default <work>\curves)
 ```
 
 (`cvdigitize` above = `cvdigitize.bat` / `.\cvdigitize.ps1`, or
