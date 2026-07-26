@@ -405,7 +405,9 @@ function renderNav() {
     const colour = st === "saved" ? "var(--good)" : st === "skipped" ? "var(--skip)" : "var(--warn)";
     const b = document.createElement("button");
     if (k === STATE.i) b.className = "cur";
-    b.innerHTML = `<span class="dot" style="background:${colour}"></span>${u.uid}`;
+    const dot = document.createElement("span");
+    dot.className = "dot"; dot.style.background = colour;
+    b.append(dot, u.uid);            // uid comes from a filename — not markup
     b.addEventListener("click", () => show(k));
     box.appendChild(b);
   });
@@ -507,7 +509,13 @@ document.addEventListener("blur", ev => {
 (async function init() {
   const r = await fetch("/api/index");
   const j = await r.json();
-  if (j.error) { document.body.innerHTML = `<div class="empty">${j.error}</div>`; return; }
+  if (j.error) {
+    document.body.textContent = "";
+    const d = document.createElement("div");
+    d.className = "empty"; d.textContent = j.error;
+    document.body.appendChild(d);
+    return;
+  }
   STATE.units = j.units || []; STATE.out = j.out_dir;
   if (!STATE.units.length) {
     document.querySelector(".wrap").innerHTML =
