@@ -16,9 +16,37 @@ import os
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from .finalize import save_panel
-from .scan import index_path, load_index, save_index, scan_folder
+from .scan import (index_path, load_index, migrate_index, needs_migration,
+                   save_index, scan_folder, unit_with_geometry)
+
+# The index is read on every request and written on every save. Re-reading it
+# from disk each time was the tool's main slowness, so it is held in memory
+# behind a lock and only the (small) file write hits the disk.
+_LOCK = threading.Lock()
+_CACHE: dict[str, dict] = {}
+
+
+def _index(work_dir: str) -> dict:
+    with _LOCK:
+        if work_dir not in _CACHE:
+            _CACHE[work_dir] = load_index(work_dir)
+        return _CACHE[work_dir]
+
+
+def _persist(work_dir: str, index: dict) -> None:
+    with _LOCK:
+        _CACHE[work_dir] = index
+        save_index(work_dir, index)
+
+
+def reset_cache() -> None:
+    """Drop the in-memory index (tests run several servers in one process)."""
+    with _LOCK:
+        _CACHE.clear()
+
 
 _UI = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "tools", "veccal.html")
@@ -93,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_file(_UI)
             elif path == "/api/index":
                 self._send_json(self._index_payload())
+            elif path == "/api/panel":
+                self._send_json(self._handle_panel(self.path))
             elif path.startswith("/panels/"):
                 self._send_file(_safe_join(self.work_dir, path[1:]))
             else:
@@ -124,21 +154,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
     # -- handlers ----------------------------------------------------------
+    def _counts(self, units: list) -> dict:
+        return {
+            "total": len(units),
+            "saved": sum(1 for u in units if u.get("status") == "saved"),
+            "skipped": sum(1 for u in units if u.get("status") == "skipped"),
+            "pending": sum(1 for u in units if u.get("status", "pending") == "pending"),
+            "prefilled": sum(1 for u in units if u.get("calib_source") != "none"),
+        }
+
     def _index_payload(self) -> dict:
-        index = load_index(self.work_dir)
+        """The panel list, without point arrays — see ``scan._split_geometry``."""
+        index = _index(self.work_dir)
         units = index.get("units", [])
         return {
             "source_folder": index.get("source_folder", ""),
             "out_dir": self.out_dir,
-            "counts": {
-                "total": len(units),
-                "saved": sum(1 for u in units if u.get("status") == "saved"),
-                "skipped": sum(1 for u in units if u.get("status") == "skipped"),
-                "pending": sum(1 for u in units if u.get("status", "pending") == "pending"),
-                "prefilled": sum(1 for u in units if u.get("calib_source") != "none"),
-            },
+            "counts": self._counts(units),
             "units": units,
         }
+
+    def _handle_panel(self, raw_path: str) -> dict:
+        """One panel, with its geometry — fetched only for the panel on screen."""
+        query = parse_qs(urlparse(raw_path).query)
+        uid = (query.get("uid") or [""])[0]
+        unit = self._find(_index(self.work_dir), uid)
+        return {"unit": unit_with_geometry(self.work_dir, unit)}
 
     def _find(self, index: dict, uid: str) -> dict:
         for u in index.get("units", []):
@@ -148,19 +189,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_save(self, body: dict) -> dict:
         uid = body.get("uid") or ""
-        index = load_index(self.work_dir)
+        index = _index(self.work_dir)
         unit = self._find(index, uid)
 
-        # Curve names/samples the user edited in the form win over the guesses.
+        # Curve names/samples the user edited in the form win over the guesses,
+        # and any curve they unticked is left out of this panel entirely.
         for edited in body.get("curves") or []:
             for curve in unit.get("curves", []):
                 if curve.get("color") == edited.get("color"):
                     if edited.get("name"):
                         curve["name"] = edited["name"].strip()
                     curve["sample"] = (edited.get("sample") or "").strip()
+                    if "include" in edited:
+                        curve["include"] = bool(edited["include"])
+
+        payload = unit_with_geometry(self.work_dir, unit)
+        payload["curves"] = [c for c in payload["curves"] if c.get("include") is not False]
+        if not payload["curves"]:
+            raise VecCalError("Every curve in this panel is unticked — "
+                              "tick at least one, or skip the panel.")
 
         result = save_panel(
-            unit, body.get("calibration") or {},
+            payload,
+            body.get("calibration") or {},
             os.path.join(self.out_dir, uid),
             resample=self.resample, resample_mode=self.resample_mode,
             scan_rate=(body.get("scan_rate") or "").strip(),
@@ -168,22 +219,22 @@ class Handler(BaseHTTPRequestHandler):
         unit["status"] = "saved"
         unit["saved_calibration"] = body.get("calibration")
         unit["saved_curves"] = result["curves"]
-        save_index(self.work_dir, index)
-        return {"ok": True, **result, "counts": self._index_payload()["counts"]}
+        _persist(self.work_dir, index)
+        return {"ok": True, **result, "counts": self._counts(index["units"])}
 
     def _handle_mark(self, body: dict, status: str) -> dict:
-        index = load_index(self.work_dir)
+        index = _index(self.work_dir)
         unit = self._find(index, body.get("uid") or "")
         unit["status"] = status
         if status == "skipped":
             unit["skip_reason"] = (body.get("reason") or "").strip()
-        save_index(self.work_dir, index)
+        _persist(self.work_dir, index)
         return {"ok": True, "status": status,
-                "counts": self._index_payload()["counts"]}
+                "counts": self._counts(index["units"])}
 
     def _handle_edit(self, body: dict) -> dict:
         """Persist name/sample edits without saving files (so they survive a reload)."""
-        index = load_index(self.work_dir)
+        index = _index(self.work_dir)
         unit = self._find(index, body.get("uid") or "")
         for edited in body.get("curves") or []:
             for curve in unit.get("curves", []):
@@ -191,13 +242,14 @@ class Handler(BaseHTTPRequestHandler):
                     if edited.get("name"):
                         curve["name"] = edited["name"].strip()
                     curve["sample"] = (edited.get("sample") or "").strip()
-        save_index(self.work_dir, index)
+        _persist(self.work_dir, index)
         return {"ok": True}
 
 
 def make_server(work_dir: str, out_dir: str, *, port: int = 0,
                 resample: int = 1000, resample_mode: str = "arclength"
                 ) -> ThreadingHTTPServer:
+    reset_cache()
     handler = type("BoundHandler", (Handler,), {
         "work_dir": work_dir, "out_dir": out_dir,
         "resample": resample, "resample_mode": resample_mode,
@@ -235,6 +287,13 @@ def run(source_folder: str, work_dir: str, out_dir: str, *, port: int = 8756,
             return 1
     else:
         index = load_index(work_dir)
+        if needs_migration(index):
+            # An index written before geometry moved into its own files; split it
+            # once so this session gets the fast path without a full re-scan.
+            print("Splitting curve geometry out of the index (one-off) ...")
+            index = migrate_index(work_dir)
+            print(f"  index.json is now "
+                  f"{os.path.getsize(index_path(work_dir)) / 1e6:.1f} MB")
         done = sum(1 for u in index["units"] if u.get("status") == "saved")
         print(f"Resuming: {done}/{len(index['units'])} panel(s) already saved "
               f"(--rescan to re-detect).")

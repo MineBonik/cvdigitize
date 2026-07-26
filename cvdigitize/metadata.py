@@ -36,6 +36,7 @@ _CAPTION = re.compile(r"\b(?:Figure|Fig\.?|FIG\.?|Scheme)\s*(\d+)\b", re.I)
 @dataclass
 class FigureMetadata:
     scan_rate: str = ""
+    scan_rate_source: str = ""   # "this page" | "elsewhere in the paper — check"
     electrolytes: list[str] = field(default_factory=list)
     reference_electrode: str = ""
     temperature: str = ""
@@ -46,6 +47,8 @@ class FigureMetadata:
         d = {"note": self.source}
         if self.scan_rate:
             d["scanRate"] = self.scan_rate
+            if self.scan_rate_source:
+                d["scanRateFoundIn"] = self.scan_rate_source
         if self.electrolytes:
             d["electrolytes"] = self.electrolytes
         if self.reference_electrode:
@@ -91,6 +94,7 @@ def extract_figure_metadata(pdf_path: str, page_number: int,
     """
     doc = fitz.open(pdf_path)
     text = _clean(doc[page_number].get_text("text"))
+    doc_text = _clean(" ".join(pg.get_text("text") for pg in doc))
     doc.close()
 
     meta = FigureMetadata()
@@ -98,10 +102,23 @@ def extract_figure_metadata(pdf_path: str, page_number: int,
     m = _SCAN.search(text)
     if m:
         meta.scan_rate = _normalize_scan_rate(m.group(1), m.group(2))
+        meta.scan_rate_source = "this page"
+    elif doc_text:
+        # Papers usually state the sweep rate once, in the experimental section,
+        # and the figure caption then says nothing about it. Searching the whole
+        # document finds it in most of this corpus, but it may belong to a
+        # different measurement — so it is labelled, never presented as if the
+        # caption said it.
+        m = _SCAN.search(doc_text)
+        if m:
+            meta.scan_rate = _normalize_scan_rate(m.group(1), m.group(2))
+            meta.scan_rate_source = "elsewhere in the paper — check"
 
     seen = set()
     for conc, salt in _ELECTROLYTE.findall(text):
-        entry = f"{conc} M {salt.strip()}"
+        # The salt group can run past a line break and swallow the start of the
+        # next sentence ("0.08 M KClO4\nFig"), so keep only its first line.
+        entry = f"{conc} M {salt.splitlines()[0].strip()}"
         if entry.lower() not in seen:
             seen.add(entry.lower())
             meta.electrolytes.append(entry)

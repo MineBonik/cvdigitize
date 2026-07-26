@@ -21,7 +21,8 @@ import matplotlib.pyplot as plt
 
 from cvdigitize.veccal import finalize
 from cvdigitize.veccal.scan import (_describe_color, _slug, _stamp_tick_values,
-                                    load_index, scan_folder)
+                                    load_geometry, load_index, scan_folder,
+                                    unit_with_geometry)
 from cvdigitize.veccal.server import make_server
 
 
@@ -333,8 +334,13 @@ def test_scan_folder_finds_a_cv_panel_and_names_its_curves(tmp_path):
     assert unit["stem"] == "smith_2020_thing_1"
     assert unit["status"] == "pending"
     assert len(unit["curves"]) >= 1
-    # geometry is stored, in PDF points, ready to calibrate
-    assert len(unit["curves"][0]["loop_pdf"]) > 10
+
+    # Geometry lives beside the index, not inside it, so the index stays small
+    # enough to load on every request (see scan._split_geometry).
+    assert "loop_pdf" not in unit["curves"][0]
+    geometry = load_geometry(work, unit["uid"])
+    assert len(geometry[unit["curves"][0]["color"]]) > 10
+    assert len(unit_with_geometry(work, unit)["curves"][0]["loop_pdf"]) > 10
     # a suggested filename that leads with the paper and is a real word
     assert unit["curves"][0]["name"].startswith("smith_2020_thing_1")
     assert "c_" not in unit["curves"][0]["color_label"]
@@ -388,6 +394,10 @@ def _write_work(work: str, out: str):
     cv2.imwrite(os.path.join(work, "panels", "paper_p0_a.png"),
                 np.full((40, 60, 3), 255, np.uint8))
     unit = _unit()
+    os.makedirs(os.path.join(work, "geometry"), exist_ok=True)
+    with open(os.path.join(work, "geometry", "paper_p0_a.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({c["color"]: c.pop("loop_pdf") for c in unit["curves"]}, f)
     unit.update({"image": "panels/paper_p0_a.png", "zoom": 3.0,
                  "origin": [0, 0], "size": [60, 40], "frame_pdf": [0, 0, 10, 10],
                  "calib_guess": None, "calib_source": "none",
@@ -510,3 +520,52 @@ def test_api_rejects_path_traversal(api):
 def test_api_unknown_route_is_404(api):
     base, _, _ = api
     assert _get(base, "/api/nope")[0] == 404
+
+
+def test_api_save_omits_unticked_curves(api):
+    """A curve the user unticked (e.g. an open trace that is not a CV) is
+    excluded from the panel rather than written with the panel's calibration."""
+    base, _, out = api
+    status, j = _post(base, "/api/save", {
+        "uid": "paper_p0_a", "calibration": _cal(),
+        "curves": [{"color": "c_000000", "name": "kept", "include": False}],
+    })
+    assert status == 400 and "unticked" in j["error"]
+    assert not os.path.exists(os.path.join(out, "paper_p0_a"))
+
+
+def test_api_panel_returns_geometry_but_index_does_not(api):
+    """The index must stay light; points come from /api/panel on demand."""
+    base, _, _ = api
+    listed = json.loads(_get(base, "/api/index")[1])["units"][0]
+    assert all("loop_pdf" not in c for c in listed["curves"])
+
+    status, body = _get(base, "/api/panel?uid=paper_p0_a")
+    assert status == 200
+    fetched = json.loads(body)["unit"]
+    assert len(fetched["curves"][0]["loop_pdf"]) >= 2
+
+
+def test_api_panel_unknown_uid_is_404(api):
+    base, _, _ = api
+    assert _get(base, "/api/panel?uid=nope")[0] == 404
+
+
+def test_migrate_splits_a_fat_index(tmp_path):
+    """An index written with inline geometry is split without losing progress."""
+    from cvdigitize.veccal.scan import (load_geometry, migrate_index,
+                                        needs_migration)
+    work = str(tmp_path / "work")
+    os.makedirs(work)
+    unit = _unit()
+    unit.update({"uid": "paper_p0_a", "status": "saved"})
+    fat = {"source_folder": "papers", "n_pdfs": 1, "units": [unit]}
+    with open(os.path.join(work, "index.json"), "w", encoding="utf-8") as f:
+        json.dump(fat, f)
+
+    assert needs_migration(fat)
+    migrated = migrate_index(work)
+    assert not needs_migration(migrated)
+    assert migrated["units"][0]["status"] == "saved"      # progress preserved
+    assert len(load_geometry(work, "paper_p0_a")["c_000000"]) >= 2
+    assert not needs_migration(load_index(work))          # and it persisted

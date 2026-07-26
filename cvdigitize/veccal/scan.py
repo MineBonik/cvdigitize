@@ -533,6 +533,62 @@ def index_path(work_dir: str) -> str:
     return os.path.join(work_dir, "index.json")
 
 
+def geometry_path(work_dir: str, uid: str) -> str:
+    return os.path.join(work_dir, "geometry", uid + ".json")
+
+
+def _split_geometry(work_dir: str, unit: dict) -> dict:
+    """Move a unit's point arrays into ``geometry/<uid>.json``; return the rest.
+
+    Curve geometry dwarfs everything else — 243 curves of up to 3000 points each
+    made a single index.json of 46 MB. The server re-reads the index on every
+    request and the browser downloaded all of it up front, so the size was paid
+    per keystroke rather than once. Keeping the index to the fields needed to
+    *list* panels, and loading points only for the panel on screen, is the
+    difference between a usable tool and an unusable one.
+    """
+    os.makedirs(os.path.join(work_dir, "geometry"), exist_ok=True)
+    geometry = {c["color"]: c.pop("loop_pdf", []) for c in unit.get("curves", [])}
+    with open(geometry_path(work_dir, unit["uid"]), "w", encoding="utf-8") as f:
+        json.dump(geometry, f, separators=(",", ":"))
+    return unit
+
+
+def load_geometry(work_dir: str, uid: str) -> dict:
+    """``{colour_key: [[x, y], ...]}`` in PDF points for one panel."""
+    path = geometry_path(work_dir, uid)
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def unit_with_geometry(work_dir: str, unit: dict) -> dict:
+    """A copy of ``unit`` with each curve's ``loop_pdf`` filled back in."""
+    geometry = load_geometry(work_dir, unit["uid"])
+    out = {**unit, "curves": [dict(c) for c in unit.get("curves", [])]}
+    for curve in out["curves"]:
+        curve["loop_pdf"] = geometry.get(curve["color"], [])
+    return out
+
+
+def needs_migration(index: dict) -> bool:
+    """True for an index written before geometry was split into its own files."""
+    return any("loop_pdf" in c
+               for u in index.get("units", []) for c in u.get("curves", []))
+
+
+def migrate_index(work_dir: str) -> dict:
+    """Split an old fat index in place, preserving status and edited names."""
+    index = load_index(work_dir)
+    if not needs_migration(index):
+        return index
+    for unit in index["units"]:
+        _split_geometry(work_dir, unit)
+    save_index(work_dir, index)
+    return index
+
+
 def scan_folder(folder: str, work_dir: str, *, cv_threshold: float = 0.08,
                 progress=None) -> dict:
     """Scan every PDF in ``folder``; write ``work_dir/index.json``.
@@ -559,7 +615,7 @@ def scan_folder(folder: str, work_dir: str, *, cv_threshold: float = 0.08,
         if progress:
             progress(i, len(pdfs), os.path.basename(pdf))
         for unit in scan_pdf(pdf, work_dir, cv_threshold=cv_threshold):
-            d = asdict(unit)
+            d = _split_geometry(work_dir, asdict(unit))
             old = previous.get(d["uid"])
             if old:
                 d["status"] = old.get("status", "pending")
