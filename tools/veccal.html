@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CV vector calibration</title>
+<style>
+  :root {
+    --bg: #f2f4f2; --card: #fff; --ink: #12181a; --muted: #5c655f; --faint: #868e88;
+    --line: #d5dbd5; --accent: #1f56d0; --accent-ink: #fff;
+    --good: #237d4c; --good-bg: #e2f0e7; --warn: #8d5c12; --warn-bg: #f6ebd8;
+    --skip: #6a6a72; --skip-bg: #e9e9ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#101413; --card:#181d1b; --ink:#eef1ee; --muted:#98a19b; --faint:#7c857f;
+      --line:#282f2c; --accent:#82a3f7; --accent-ink:#0b1120;
+      --good:#5cc389; --good-bg:#17281e; --warn:#e0ac60; --warn-bg:#2a2115;
+      --skip:#9a9aa2; --skip-bg:#222326; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif; }
+  code, .mono { font-family: ui-monospace,Consolas,monospace; font-variant-numeric: tabular-nums; }
+
+  header { position:sticky; top:0; z-index:5; background:var(--card);
+    border-bottom:1px solid var(--line); padding:10px 18px;
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  .progress { flex:1; min-width:180px; display:flex; align-items:center; gap:10px; }
+  .bar { flex:1; height:6px; background:var(--line); border-radius:99px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--good); width:0; transition:width .25s; }
+  .counts { font-size:12.5px; color:var(--muted); white-space:nowrap; }
+  .counts b { color:var(--ink); }
+
+  .wrap { display:grid; grid-template-columns: minmax(0,1fr) 380px; gap:18px;
+    padding:18px; align-items:start; }
+  @media (max-width: 980px) { .wrap { grid-template-columns: minmax(0,1fr); } }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; }
+  .card > h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--faint); margin:0; padding:12px 16px; border-bottom:1px solid var(--line); font-weight:600; }
+  .card > .body { padding:16px; }
+
+  #stage { position:relative; overflow:auto; max-height:74vh; background:#fff;
+    border-radius:0 0 10px 10px; }
+  @media (prefers-color-scheme: dark) { #stage { background:#f6f6f4; } }
+  #stage canvas { display:block; cursor:crosshair; }
+
+  .panel-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+    padding:12px 16px; border-bottom:1px solid var(--line); }
+  .panel-head .uid { font-weight:600; font-size:14px; }
+  .panel-head .sub { font-size:12.5px; color:var(--muted); }
+  .pill { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
+    padding:3px 8px; border-radius:99px; }
+  .pill.good { background:var(--good-bg); color:var(--good); }
+  .pill.warn { background:var(--warn-bg); color:var(--warn); }
+  .pill.skip { background:var(--skip-bg); color:var(--skip); }
+
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+  input[type=text], input[type=number], select {
+    width:100%; padding:6px 8px; font:13px/1.4 ui-monospace,Consolas,monospace;
+    background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:6px; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px; }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:12px; margin:0 0 14px; }
+  legend { font-size:12px; color:var(--faint); font-weight:600; padding:0 6px;
+    text-transform:uppercase; letter-spacing:.04em; }
+
+  button { font:600 13px/1 -apple-system,"Segoe UI",sans-serif; padding:9px 14px;
+    border-radius:7px; border:1px solid var(--line); background:var(--card);
+    color:var(--ink); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+  .curve-row { display:grid; grid-template-columns:16px 1fr; gap:9px; align-items:start;
+    padding:9px 0; border-top:1px solid var(--line); }
+  .swatch { width:14px; height:14px; border-radius:3px; margin-top:5px;
+    border:1px solid rgba(0,0,0,.25); }
+  .curve-row .meta { font-size:11.5px; color:var(--faint); margin-top:3px; }
+
+  .hint { font-size:12px; color:var(--muted); margin:0 0 10px; }
+  .snap-hint { font-size:11.5px; color:var(--faint); margin-top:6px; }
+  #msg { padding:9px 12px; border-radius:7px; font-size:13px; margin-bottom:12px; display:none; }
+  #msg.err { display:block; background:var(--warn-bg); color:var(--warn); }
+  #msg.ok  { display:block; background:var(--good-bg); color:var(--good); }
+  .empty { padding:40px 18px; text-align:center; color:var(--muted); }
+  .navlist { max-height:220px; overflow:auto; }
+  .navlist button { display:block; width:100%; text-align:left; border:none;
+    border-radius:0; border-bottom:1px solid var(--line); font-weight:400;
+    font-family:ui-monospace,Consolas,monospace; font-size:12px; padding:7px 12px; background:none; }
+  .navlist button.cur { background:var(--bg); font-weight:700; }
+  .navlist .dot { display:inline-block; width:7px; height:7px; border-radius:99px; margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CV vector calibration</h1>
+  <div class="progress">
+    <div class="bar"><i id="barFill"></i></div>
+    <span class="counts" id="counts">loading…</span>
+  </div>
+  <div class="actions">
+    <button id="btnPrev">← Prev</button>
+    <button id="btnNext">Next →</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="card">
+      <div class="panel-head">
+        <span class="uid" id="pUid">—</span>
+        <span class="pill" id="pStatus"></span>
+        <span class="pill" id="pSource"></span>
+        <span class="sub" id="pSub"></span>
+      </div>
+      <div id="stage"><canvas id="cv"></canvas></div>
+    </div>
+    <p class="hint" style="margin-top:10px" id="clickHint"></p>
+  </div>
+
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>Calibration</h2>
+      <div class="body">
+        <div id="msg"></div>
+        <p class="hint" id="calNote"></p>
+
+        <fieldset>
+          <legend>E axis (horizontal)</legend>
+          <div class="row">
+            <div><label>value at anchor 1</label><input type="text" id="ex1" inputmode="decimal"></div>
+            <div><label>value at anchor 2</label><input type="text" id="ex2" inputmode="decimal"></div>
+          </div>
+          <div class="row">
+            <div><label>label</label><input type="text" id="xlab" value="E"></div>
+            <div><label>unit</label><input type="text" id="xunit" value="V"></div>
+          </div>
+          <div class="actions">
+            <button data-pick="x1">Set anchor 1 by click</button>
+            <button data-pick="x2">Set anchor 2 by click</button>
+          </div>
+          <p class="snap-hint" id="xPos"></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>j axis (vertical)</legend>
+          <div class="row">
+            <div><label>value at anchor 1</label><input type="text" id="jy1" inputmode="decimal"></div>
+            <div><label>value at anchor 2</label><input type="text" id="jy2" inputmode="decimal"></div>
+          </div>
+          <div class="row">
+            <div><label>label</label><input type="text" id="ylab" value="j"></div>
+            <div><label>unit</label><input type="text" id="yunit" value="uA/cm2"></div>
+          </div>
+          <div class="actions">
+            <button data-pick="y1">Set anchor 1 by click</button>
+            <button data-pick="y2">Set anchor 2 by click</button>
+          </div>
+          <p class="snap-hint" id="yPos"></p>
+        </fieldset>
+
+        <div style="margin-bottom:14px">
+          <label>scan rate (for the metadata)</label>
+          <input type="text" id="scanRate" placeholder="e.g. 50 mV/s">
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="btnSave">Save &amp; next</button>
+          <button id="btnSkip">Skip panel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>Curves in this panel</h2>
+      <div class="body" id="curveList"></div>
+    </div>
+
+    <div class="card">
+      <h2>Panels</h2>
+      <div class="navlist" id="navList"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const STATE = { units: [], i: 0, out: "", pick: null, cal: {}, img: null };
+
+/* ---------- geometry -------------------------------------------------
+   Curves and anchors are stored in PDF points. The picture on screen is the
+   page rendered at `zoom` then cropped, so crop_px = pdf * zoom - origin.
+   Clicks come back the other way. Keeping one conversion pair here means the
+   values POSTed to the server are already in the space the calibration uses. */
+const toCropX = (u, x) => x * u.zoom - u.origin[0];
+const toCropY = (u, y) => y * u.zoom - u.origin[1];
+const toPdfX  = (u, x) => (x + u.origin[0]) / u.zoom;
+const toPdfY  = (u, y) => (y + u.origin[1]) / u.zoom;
+
+const unit = () => STATE.units[STATE.i];
+const num  = v => { const n = parseFloat(String(v).replace(",", ".")); return Number.isFinite(n) ? n : null; };
+
+/* ---------- drawing -------------------------------------------------- */
+function draw() {
+  const u = unit(), cv = $("cv");
+  if (!u || !STATE.img) return;
+  const W = u.size[0], H = u.size[1];
+  cv.width = W; cv.height = H;
+  cv.style.maxWidth = "100%";
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, W, H);
+  g.drawImage(STATE.img, 0, 0, W, H);
+
+  // extracted curves, in their own colours, over the original figure
+  for (const c of u.curves) {
+    const pts = c.loop_pdf;
+    if (!pts || pts.length < 2) continue;
+    const [r, gg, b] = c.rgb.map(v => Math.round(v * 255));
+    g.beginPath();
+    g.moveTo(toCropX(u, pts[0][0]), toCropY(u, pts[0][1]));
+    for (let k = 1; k < pts.length; k++) g.lineTo(toCropX(u, pts[k][0]), toCropY(u, pts[k][1]));
+    g.strokeStyle = `rgba(${r},${gg},${b},0.95)`;
+    g.lineWidth = 2.4; g.lineJoin = "round"; g.stroke();
+    // a thin bright core so a dark trace stays visible on dark ink
+    g.strokeStyle = "rgba(0,255,140,0.9)"; g.lineWidth = 0.8; g.stroke();
+  }
+
+  // tick snap targets
+  g.font = "11px ui-monospace, monospace";
+  for (const t of u.x_ticks || []) {
+    const x = toCropX(u, t.pos);
+    g.strokeStyle = "rgba(31,86,208,.45)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+  }
+  for (const t of u.y_ticks || []) {
+    const y = toCropY(u, t.pos);
+    g.strokeStyle = "rgba(31,86,208,.45)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+  }
+
+  // the two anchors per axis
+  const mark = (x1, y1, x2, y2, colour, tag) => {
+    g.strokeStyle = colour; g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.fillStyle = colour; g.font = "bold 12px ui-monospace, monospace";
+    g.fillText(tag, x1 + 4, y1 + 14);
+  };
+  if (STATE.cal.x1 != null) { const x = toCropX(u, STATE.cal.x1); mark(x, 0, x, H, "#d81b60", "E1"); }
+  if (STATE.cal.x2 != null) { const x = toCropX(u, STATE.cal.x2); mark(x, 0, x, H, "#d81b60", "E2"); }
+  if (STATE.cal.y1 != null) { const y = toCropY(u, STATE.cal.y1); mark(0, y, W, y, "#f57c00", "j1"); }
+  if (STATE.cal.y2 != null) { const y = toCropY(u, STATE.cal.y2); mark(0, y, W, y, "#f57c00", "j2"); }
+}
+
+/* ---------- click to place an anchor --------------------------------- */
+$("cv").addEventListener("click", ev => {
+  const u = unit(); if (!u || !STATE.pick) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const sx = u.size[0] / r.width, sy = u.size[1] / r.height;
+  const cx = (ev.clientX - r.left) * sx, cy = (ev.clientY - r.top) * sy;
+  const horizontal = STATE.pick.startsWith("x");
+
+  // snap to the nearest detected tick when the click lands close to one,
+  // so a confirmed anchor sits exactly on the tick, not a pixel beside it
+  const ticks = horizontal ? (u.x_ticks || []) : (u.y_ticks || []);
+  const clicked = horizontal ? toPdfX(u, cx) : toPdfY(u, cy);
+  let best = null, bestD = Infinity;
+  for (const t of ticks) {
+    const d = Math.abs(t.pos - clicked) * u.zoom;
+    if (d < bestD) { bestD = d; best = t; }
+  }
+  const snapped = (best && bestD <= 10);
+  STATE.cal[STATE.pick] = snapped ? best.pos : clicked;
+  if (snapped && best.value != null) {
+    const box = horizontal ? (STATE.pick === "x1" ? "ex1" : "ex2")
+                           : (STATE.pick === "y1" ? "jy1" : "jy2");
+    if (!$(box).value.trim()) $(box).value = String(best.value);
+  }
+  STATE.pick = null;
+  $("clickHint").textContent = snapped ? "Snapped to a detected tick." : "Anchor placed.";
+  syncPos(); draw();
+});
+
+document.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => {
+  STATE.pick = b.dataset.pick;
+  $("clickHint").textContent = `Click the figure to place ${b.dataset.pick.toUpperCase()} `
+    + (b.dataset.pick.startsWith("x") ? "(a vertical line — click a tick on the E axis)."
+                                      : "(a horizontal line — click a tick on the j axis).");
+}));
+
+function syncPos() {
+  const u = unit(); if (!u) return;
+  const f = v => v == null ? "—" : v.toFixed(1);
+  $("xPos").textContent = `anchor positions (PDF pt): E1 ${f(STATE.cal.x1)} · E2 ${f(STATE.cal.x2)}`
+    + `  ·  ${(u.x_ticks || []).length} tick(s) detected`;
+  $("yPos").textContent = `anchor positions (PDF pt): j1 ${f(STATE.cal.y1)} · j2 ${f(STATE.cal.y2)}`
+    + `  ·  ${(u.y_ticks || []).length} tick(s) detected`;
+}
+
+/* ---------- render one panel ---------------------------------------- */
+function show(i) {
+  if (!STATE.units.length) return;
+  STATE.i = Math.max(0, Math.min(STATE.units.length - 1, i));
+  const u = unit();
+  STATE.pick = null;
+  $("msg").className = ""; $("clickHint").textContent = "";
+
+  $("pUid").textContent = u.uid;
+  $("pSub").textContent = `${u.stem} · page ${u.page + 1}`
+    + (u.panel ? ` · panel ${u.panel}` : "") + (u.figure ? ` · figure ${u.figure}` : "")
+    + ` · ${u.curves.length} curve(s)`;
+
+  const st = u.status || "pending";
+  $("pStatus").textContent = st;
+  $("pStatus").className = "pill " + (st === "saved" ? "good" : st === "skipped" ? "skip" : "warn");
+
+  const src = u.calib_source || "none";
+  $("pSource").textContent = src === "auto-text" ? "pre-filled from axis text"
+    : src === "auto-ocr" ? "pre-filled by OCR" : "no pre-fill";
+  $("pSource").className = "pill " + (src === "none" ? "skip" : "good");
+
+  $("calNote").textContent = src === "none"
+    ? "Nothing readable to pre-fill: click a tick on each axis and type its value. Blue lines are detected ticks."
+    : "Pre-filled from the figure — check the four numbers against the picture before saving.";
+
+  // pre-fill the form: a previously saved calibration wins, then the guess
+  const g = u.saved_calibration || u.calib_guess;
+  STATE.cal = {};
+  if (g) {
+    STATE.cal = { x1: g.x1, x2: g.x2, y1: g.y1, y2: g.y2 };
+    $("ex1").value = g.ex1; $("ex2").value = g.ex2;
+    $("jy1").value = g.jy1; $("jy2").value = g.jy2;
+    $("xlab").value = g.x_label || "E"; $("ylab").value = g.y_label || "j";
+    $("xunit").value = plausibleUnit(g.x_unit, "V");
+    $("yunit").value = plausibleUnit(g.y_unit, "uA/cm2");
+  } else {
+    for (const k of ["ex1", "ex2", "jy1", "jy2"]) $(k).value = "";
+    // no guess: offer the outermost detected ticks as the anchor positions
+    const xt = u.x_ticks || [], yt = u.y_ticks || [];
+    if (xt.length >= 2) { STATE.cal.x1 = xt[0].pos; STATE.cal.x2 = xt[xt.length - 1].pos; }
+    if (yt.length >= 2) { STATE.cal.y1 = yt[0].pos; STATE.cal.y2 = yt[yt.length - 1].pos; }
+    if (xt.length >= 2 && xt[0].value != null) { $("ex1").value = xt[0].value; $("ex2").value = xt[xt.length - 1].value; }
+    if (yt.length >= 2 && yt[0].value != null) { $("jy1").value = yt[0].value; $("jy2").value = yt[yt.length - 1].value; }
+    $("xunit").value = plausibleUnit(u.axis_titles && u.axis_titles[0], "V");
+    $("yunit").value = plausibleUnit(u.axis_titles && u.axis_titles[1], "uA/cm2");
+  }
+  $("scanRate").value = (u.figure_meta && u.figure_meta.scanRate) || "";
+
+  renderCurves(u); renderNav(); syncPos();
+
+  STATE.img = new Image();
+  STATE.img.onload = draw;
+  STATE.img.onerror = () => { STATE.img = null; };
+  STATE.img.src = "/" + u.image + "?v=" + Date.now();
+}
+
+/* Axis titles are scraped text; only offer one as a unit if it looks like one
+   rather than a sentence, so the user is not handed "auto (unverified)". */
+function plausibleUnit(text, fallback) {
+  const t = (text || "").trim();
+  if (!t || t.length > 24 || /unverified|auto|^\(/i.test(t)) return fallback;
+  return t;
+}
+
+function renderCurves(u) {
+  const box = $("curveList");
+  box.innerHTML = "";
+  u.curves.forEach((c, k) => {
+    const [r, g, b] = c.rgb.map(v => Math.round(v * 255));
+    const row = document.createElement("div");
+    row.className = "curve-row";
+    row.innerHTML = `
+      <div class="swatch" style="background:rgb(${r},${g},${b})"></div>
+      <div>
+        <label>file name</label>
+        <input type="text" data-cn="${k}" value="">
+        <label style="margin-top:7px">sample / legend (optional)</label>
+        <input type="text" data-cs="${k}" value="" placeholder="e.g. Pt(111) in 0.1 M HClO4">
+        <div class="meta">${c.color_label} · ${c.n_points} pts · loop score ${c.loopiness}</div>
+      </div>`;
+    box.appendChild(row);
+    row.querySelector(`[data-cn="${k}"]`).value = c.name || "";
+    row.querySelector(`[data-cs="${k}"]`).value = c.sample || "";
+  });
+}
+
+function collectCurves() {
+  return unit().curves.map((c, k) => ({
+    color: c.color,
+    name: (document.querySelector(`[data-cn="${k}"]`) || {}).value || c.name,
+    sample: (document.querySelector(`[data-cs="${k}"]`) || {}).value || "",
+  }));
+}
+
+function renderNav() {
+  const box = $("navList");
+  box.innerHTML = "";
+  STATE.units.forEach((u, k) => {
+    const st = u.status || "pending";
+    const colour = st === "saved" ? "var(--good)" : st === "skipped" ? "var(--skip)" : "var(--warn)";
+    const b = document.createElement("button");
+    if (k === STATE.i) b.className = "cur";
+    b.innerHTML = `<span class="dot" style="background:${colour}"></span>${u.uid}`;
+    b.addEventListener("click", () => show(k));
+    box.appendChild(b);
+  });
+  const cur = box.querySelector(".cur");
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+
+function setCounts(c) {
+  $("counts").innerHTML = `<b>${c.saved}</b> saved · ${c.skipped} skipped · `
+    + `<b>${c.pending}</b> left <span style="color:var(--faint)">of ${c.total}</span>`;
+  $("barFill").style.width = (c.total ? (100 * (c.saved + c.skipped) / c.total) : 0) + "%";
+}
+
+function msg(text, kind) { const m = $("msg"); m.textContent = text; m.className = kind; }
+
+/* ---------- server calls -------------------------------------------- */
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({ error: "bad response" }));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+function nextPending() {
+  for (let k = STATE.i + 1; k < STATE.units.length; k++)
+    if ((STATE.units[k].status || "pending") === "pending") return k;
+  for (let k = 0; k < STATE.units.length; k++)
+    if ((STATE.units[k].status || "pending") === "pending") return k;
+  return STATE.i;
+}
+
+$("btnSave").addEventListener("click", async () => {
+  const u = unit();
+  const cal = {
+    x1: STATE.cal.x1, x2: STATE.cal.x2, y1: STATE.cal.y1, y2: STATE.cal.y2,
+    ex1: num($("ex1").value), ex2: num($("ex2").value),
+    jy1: num($("jy1").value), jy2: num($("jy2").value),
+    x_label: $("xlab").value, y_label: $("ylab").value,
+    x_unit: $("xunit").value, y_unit: $("yunit").value,
+  };
+  for (const [k, what] of [["x1", "E anchor 1"], ["x2", "E anchor 2"],
+                           ["y1", "j anchor 1"], ["y2", "j anchor 2"]]) {
+    if (cal[k] == null) { msg(`Place ${what} by clicking the figure.`, "err"); return; }
+  }
+  for (const [k, what] of [["ex1", "E value 1"], ["ex2", "E value 2"],
+                           ["jy1", "j value 1"], ["jy2", "j value 2"]]) {
+    if (cal[k] == null) { msg(`${what} is not a number.`, "err"); return; }
+  }
+  $("btnSave").disabled = true;
+  try {
+    const res = await post("/api/save", {
+      uid: u.uid, calibration: cal, curves: collectCurves(),
+      scan_rate: $("scanRate").value,
+    });
+    u.status = "saved"; u.saved_calibration = cal;
+    setCounts(res.counts);
+    msg(`Saved ${res.curves.length} curve(s) to ${res.out_dir}`, "ok");
+    renderNav();
+    const nxt = nextPending();
+    if (nxt !== STATE.i) setTimeout(() => show(nxt), 550);
+  } catch (e) {
+    msg(e.message, "err");
+  } finally {
+    $("btnSave").disabled = false;
+  }
+});
+
+$("btnSkip").addEventListener("click", async () => {
+  const u = unit();
+  try {
+    const res = await post("/api/skip", { uid: u.uid });
+    u.status = "skipped";
+    setCounts(res.counts); renderNav();
+    const nxt = nextPending();
+    if (nxt !== STATE.i) show(nxt); else msg("Skipped.", "ok");
+  } catch (e) { msg(e.message, "err"); }
+});
+
+$("btnPrev").addEventListener("click", () => show(STATE.i - 1));
+$("btnNext").addEventListener("click", () => show(STATE.i + 1));
+document.addEventListener("keydown", ev => {
+  if (ev.target.tagName === "INPUT") return;
+  if (ev.key === "ArrowLeft") show(STATE.i - 1);
+  if (ev.key === "ArrowRight") show(STATE.i + 1);
+});
+
+// persist name edits when leaving a field, so a reload keeps them
+document.addEventListener("blur", ev => {
+  if (!ev.target.matches || !ev.target.matches("[data-cn],[data-cs]")) return;
+  const u = unit(); if (!u) return;
+  const edits = collectCurves();
+  u.curves.forEach((c, k) => { c.name = edits[k].name; c.sample = edits[k].sample; });
+  post("/api/edit", { uid: u.uid, curves: edits }).catch(() => {});
+}, true);
+
+(async function init() {
+  const r = await fetch("/api/index");
+  const j = await r.json();
+  if (j.error) { document.body.innerHTML = `<div class="empty">${j.error}</div>`; return; }
+  STATE.units = j.units || []; STATE.out = j.out_dir;
+  if (!STATE.units.length) {
+    document.querySelector(".wrap").innerHTML =
+      '<div class="empty">No vector CV panels were found. Re-run the scan with a different folder.</div>';
+    return;
+  }
+  setCounts(j.counts);
+  // resume on the first panel still waiting, else start at the top
+  const first = STATE.units.findIndex(u => (u.status || "pending") === "pending");
+  show(first === -1 ? 0 : first);
+})();
+</script>
+</body>
+</html>
