@@ -97,6 +97,85 @@ def test_stamp_tick_values_degenerate_span_is_noop():
 
 
 # --------------------------------------------------------------------------- #
+# panel labels
+# --------------------------------------------------------------------------- #
+def test_panel_labels_stay_filename_safe_past_z():
+    """Regression: 27+ panels used to emit control characters like '\\x85'.
+
+    Frame detection over-segments some pages into 20+ panels, and the label goes
+    straight into a directory name — 'panel_\\x85' then failed to open at all.
+    """
+    from cvdigitize.vector_extract import panel_label
+    labels = [panel_label(i, 0, 100) for i in range(60)]
+    assert all(l.isascii() and l.isalpha() for l in labels)
+    assert len(set(labels)) == 60
+    assert labels[:3] == ["a", "b", "c"]
+    assert labels[25:28] == ["z", "aa", "ab"]
+
+
+# --------------------------------------------------------------------------- #
+# re-anchoring a calibration guess onto real ticks
+# --------------------------------------------------------------------------- #
+def _bbox_cal():
+    """A calibration anchored at a curve's bbox, as match_calibration returns."""
+    from cvdigitize.calibrate import Calibration
+    return Calibration(x1=137.0, ex1=0.0731, x2=292.0, ex2=0.9312,
+                       y1=63.0, jy1=0.118, y2=189.0, jy2=-0.121)
+
+
+def _ticks_on(cal, positions, axis):
+    """Ticks whose values lie exactly on ``cal``'s own line."""
+    if axis == "x":
+        f = lambda p: cal.ex1 + (p - cal.x1) * (cal.ex2 - cal.ex1) / (cal.x2 - cal.x1)
+    else:
+        f = lambda p: cal.jy1 + (p - cal.y1) * (cal.jy2 - cal.jy1) / (cal.y2 - cal.y1)
+    return [{"pos": p, "value": f(p)} for p in positions]
+
+
+def test_snap_to_ticks_preserves_the_mapping_exactly():
+    """Re-anchoring must only relabel where the map is sampled, never change it."""
+    from cvdigitize.veccal.scan import _snap_to_ticks
+    cal = _bbox_cal()
+    snapped = _snap_to_ticks(cal, _ticks_on(cal, (150.0, 200.0, 270.0), "x"),
+                             _ticks_on(cal, (70.0, 180.0), "y"))
+    px = np.array([137.0, 180.0, 220.0, 292.0])
+    py = np.array([63.0, 120.0, 189.0, 70.0])
+    E0, j0 = cal.to_data(px, py)
+    E1, j1 = snapped.to_data(px, py)
+    assert np.abs(E0 - E1).max() < 1e-12
+    assert np.abs(j0 - j1).max() < 1e-12
+    # and it really did move the anchors onto the ticks
+    assert (snapped.x1, snapped.x2) == (150.0, 270.0)
+    assert (snapped.y1, snapped.y2) == (70.0, 180.0)
+
+
+def test_snap_to_ticks_refuses_inconsistent_ticks():
+    """If the ticks disagree with the fit, re-anchoring would corrupt it."""
+    from cvdigitize.veccal.scan import _snap_to_ticks
+    cal = _bbox_cal()
+    bogus_x = [{"pos": 150.0, "value": 0.2}, {"pos": 270.0, "value": 0.9}]
+    bogus_y = [{"pos": 70.0, "value": 0.1}, {"pos": 180.0, "value": -0.1}]
+    assert _snap_to_ticks(cal, bogus_x, bogus_y) == cal
+
+
+def test_snap_to_ticks_handles_one_axis_at_a_time():
+    from cvdigitize.veccal.scan import _snap_to_ticks
+    cal = _bbox_cal()
+    out = _snap_to_ticks(cal, _ticks_on(cal, (150.0, 270.0), "x"),
+                         [{"pos": 70.0, "value": 0.1}])   # too few to use
+    assert out.x1 == 150.0
+    assert (out.y1, out.jy1) == (cal.y1, cal.jy1)
+
+
+def test_snap_to_ticks_ignores_unlabelled_ticks():
+    from cvdigitize.veccal.scan import _snap_to_ticks
+    cal = _bbox_cal()
+    out = _snap_to_ticks(cal, [{"pos": 150.0, "value": None},
+                               {"pos": 270.0, "value": None}], [])
+    assert out == cal
+
+
+# --------------------------------------------------------------------------- #
 # finalize: calibration -> datapackages
 # --------------------------------------------------------------------------- #
 def _unit(loop=None, names=("curve_black",), colours=("c_000000",)):

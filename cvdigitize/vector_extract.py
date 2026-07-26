@@ -394,8 +394,22 @@ def extract_panels(
 
 
 def panel_label(col: int, row: int, nx: int) -> str:
-    """Grid cell -> figure letter, row-major from top-left: (0,0)->'a'."""
-    return chr(ord("a") + row * nx + col)
+    """Grid cell -> figure letter, row-major from top-left: (0,0)->'a'.
+
+    Past the 26th panel it continues 'aa', 'ab', ... rather than running off the
+    end of the alphabet. A bare ``chr(ord("a") + n)`` used to emit control
+    characters there, which then became unusable ``panel_\\x85`` directory names
+    (a real crash on pages where frame detection over-segments into 20+ panels).
+    """
+    n = row * nx + col
+    label = ""
+    while True:
+        n, rem = divmod(n, 26)
+        label = chr(ord("a") + rem) + label
+        if n == 0:
+            break
+        n -= 1
+    return label
 
 
 @dataclass

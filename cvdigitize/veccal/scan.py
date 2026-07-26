@@ -222,6 +222,57 @@ def _ocr_calibration(det: dict):
         return None
 
 
+def _snap_to_ticks(cal, x_ticks: list[dict], y_ticks: list[dict]):
+    """Move a calibration's anchors onto real tick marks, same mapping.
+
+    ``autocalib.match_calibration`` anchors at the *curve's* bounding box, so it
+    is exact but its numbers are wherever the ink happens to stop — 0.0731 V
+    rather than 0.2 V. A human is being asked to confirm this against the
+    printed axis, which is far easier when the anchor sits on a tick and shows
+    that tick's own number.
+
+    Moving the anchors is only safe if the ticks lie on the calibration's own
+    line: this function and ``match_calibration`` choose their label sets by
+    different criteria (frame edge vs curve bbox) and *can* disagree, in which
+    case re-anchoring would change the mapping rather than just relabel it. So
+    each axis is re-anchored only after checking that the calibration already
+    maps those tick positions to those tick values; otherwise that axis is left
+    exactly as it was.
+    """
+    from dataclasses import replace
+
+    def _outer(ticks):
+        labelled = [t for t in ticks if t.get("value") is not None]
+        if len(labelled) < 2 or labelled[0]["pos"] == labelled[-1]["pos"]:
+            return None
+        return labelled[0], labelled[-1]
+
+    def _agrees(lo, hi, p1, v1, p2, v2) -> bool:
+        """True if the map through (p1,v1)-(p2,v2) predicts both tick values."""
+        if p2 == p1:
+            return False
+        slope = (v2 - v1) / (p2 - p1)
+        span = abs(hi["value"] - lo["value"]) or 1.0
+        for t in (lo, hi):
+            predicted = v1 + (t["pos"] - p1) * slope
+            if abs(predicted - t["value"]) > 0.02 * span:
+                return False
+        return True
+
+    out = cal
+    xs = _outer(x_ticks)
+    if xs and _agrees(*xs, cal.x1, cal.ex1, cal.x2, cal.ex2):
+        lo, hi = xs
+        out = replace(out, x1=lo["pos"], ex1=lo["value"],
+                      x2=hi["pos"], ex2=hi["value"])
+    ys = _outer(y_ticks)
+    if ys and _agrees(*ys, cal.y1, cal.jy1, cal.y2, cal.jy2):
+        lo, hi = ys
+        out = replace(out, y1=lo["pos"], jy1=lo["value"],
+                      y2=hi["pos"], jy2=hi["value"])
+    return out
+
+
 def _stamp_tick_values(ticks: list[dict], p1: float, v1: float,
                        p2: float, v2: float) -> None:
     """Label every detected tick by interpolating the two OCR'd anchors.
@@ -302,6 +353,16 @@ def _panel_curves(curves, panel_label: str, stem: str, figure: str,
 #: above a page of body text with a rule or two.
 MIN_CURVE_ITEMS = 120
 
+#: Smallest panel worth showing, in PDF points. The whole workflow asks a human
+#: to read this panel's tick labels off a picture of it, so a plot too small to
+#: carry legible labels is not a work unit no matter how CV-shaped its ink is.
+#: Frame detection over-segments some pages into grids of tiny repeated drawings
+#: (climent_2017 p1: twenty 40x51pt thumbnails), and those would otherwise
+#: become twenty panels to click through. Real plots clear this comfortably —
+#: luo_2022's four-panel figure is 155x126pt each.
+MIN_PANEL_W_PT = 70.0
+MIN_PANEL_H_PT = 55.0
+
 
 def candidate_pages(pdf: str) -> list[int]:
     """Pages of ``pdf`` that plausibly hold a vector figure.
@@ -349,11 +410,14 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
         if not panels:
             continue
 
-        # CV-likeness gate: loop score is calibration-invariant, so non-CV
-        # panels (schematics, Tafel plots, micrographs) are dropped before any
-        # rendering or file I/O happens.
+        # Two gates, both before any rendering or file I/O. Size first because
+        # it is free; then CV-likeness, whose loop score is calibration-
+        # invariant, to drop schematics, Tafel plots and micrographs.
         keep = []
         for p in panels:
+            x0, y0, x1, y1 = p.frame_pdf
+            if (x1 - x0) < MIN_PANEL_W_PT or (y1 - y0) < MIN_PANEL_H_PT:
+                continue
             score = max((loop_metrics(dedupe(order_curve(
                 keep_main_components(c.polylines))))["loopiness"]
                 for c in p.curves), default=0.0)
@@ -418,11 +482,12 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
             # Either way every detected tick becomes a click-to-snap target so
             # a wrong guess is a click plus a number, not a hunt for a pixel.
             if label_sets and bbox:
-                cal = match_calibration(label_sets, bbox)
-                if cal is not None:
-                    guess, source = asdict(cal), "auto-text"
                 x_ticks = _ticks_from_labels(label_sets, "x", p.frame_pdf)
                 y_ticks = _ticks_from_labels(label_sets, "y", p.frame_pdf)
+                cal = match_calibration(label_sets, bbox)
+                if cal is not None:
+                    guess = asdict(_snap_to_ticks(cal, x_ticks, y_ticks))
+                    source = "auto-text"
 
             if bbox and (guess is None or not x_ticks or not y_ticks):
                 det = _tick_detection(pdf, page, bbox, img)
