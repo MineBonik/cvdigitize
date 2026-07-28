@@ -33,7 +33,8 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from ..autocalib import find_axis_label_sets, match_calibration
+from ..autocalib import (find_axis_label_sets, find_axis_units,
+                         match_calibration)
 from ..ingest import render_page
 from ..metadata import (detect_plot_legend, extract_figure_metadata,
                         legend_for_panel, parse_curve_legend)
@@ -151,6 +152,11 @@ class PanelUnit:
     x_ticks: list = field(default_factory=list)   # snap targets, PDF pt + value
     y_ticks: list = field(default_factory=list)
     axis_titles: list = field(default_factory=list)   # [x_title, y_title]
+    #: Units read off the axis titles, "" where the figure did not say. Never
+    #: guessed: a CV in mA cm-2 saved as uA/cm2 is wrong by 1000x and looks
+    #: entirely plausible, so the user fills a blank rather than correcting a
+    #: default they have no reason to distrust.
+    axis_units: list = field(default_factory=list)     # [x_unit, y_unit]
     figure_meta: dict = field(default_factory=dict)   # scan rate, electrolyte...
     paper_meta: dict = field(default_factory=dict)    # doi, title, journal...
     status: str = "pending"              # "pending" | "saved" | "skipped"
@@ -186,6 +192,13 @@ def _ticks_from_labels(label_sets, orientation: str,
         pos = lab.cx if orientation == "x" else lab.cy
         out.append({"pos": round(float(pos), 3), "value": float(lab.value)})
     return sorted(out, key=lambda t: t["pos"])
+
+
+def _axis_units(pdf: str, page: int, frame_pdf) -> tuple[str, str]:
+    try:
+        return find_axis_units(pdf, page, frame_pdf)
+    except Exception:
+        return ("", "")
 
 
 def _tick_detection(pdf: str, page: int, bbox, img):
@@ -518,6 +531,7 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
                 calib_guess=guess, calib_source=source,
                 x_ticks=x_ticks, y_ticks=y_ticks,
                 axis_titles=list(titles),
+                axis_units=list(_axis_units(pdf, page, p.frame_pdf)),
                 figure_meta=(fmeta.as_dict() if fmeta and not fmeta.is_empty else {}),
                 paper_meta=paper,
             ))
