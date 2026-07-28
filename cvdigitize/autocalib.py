@@ -315,3 +315,88 @@ def assisted_tick_calibration(detection: dict,
         y1=yt[0] / z, jy1=y_vals[0], y2=yt[-1] / z, jy2=y_vals[1],
         x_unit=x_unit, y_unit=y_unit,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Axis units from the axis TITLE text.
+#
+# Tick-label fitting needs the numbers to be machine-readable, but the axis
+# *title* is a separate string that often survives even when the numbers are
+# outlined — and it is the only place the unit is written. Getting this wrong is
+# not cosmetic: a CV plotted in mA cm-2 saved as uA/cm2 is off by 1000x while
+# looking perfectly sensible, so the unit must come from the figure rather than
+# from a plausible default.
+# --------------------------------------------------------------------------- #
+_UNIT_BODY = r"[a-zA-Zµμ]+\s*(?:c?m)?\s*(?:[-−–]?\s*\d)?"
+#: "(mA cm-2)" / "/ V" / "/ uA cm-2" — a unit given in brackets or after a slash.
+_UNIT_IN_TITLE = re.compile(
+    r"\((?P<paren>[^()]{1,22})\)|/\s*(?P<slash>" + _UNIT_BODY + r")")
+#: What a current/potential unit actually looks like, so words like "versus"
+#: or "RHE" are not mistaken for one.
+_UNIT_OK = re.compile(r"^(?:[munµμ]?[AVC])\b|^(?:[munµμ]?[AVC])\s*c?m", re.I)
+
+
+def parse_axis_unit(title: str) -> str:
+    """The unit inside an axis title, e.g. ``j (mA cm-2)`` -> ``mA cm-2``.
+
+    Returns "" when the title carries no recognisable unit, which the caller
+    must treat as "ask the user" rather than substituting a guess.
+    """
+    text = _normalize(title or "").replace("–", "-").replace("−", "-")
+    for m in _UNIT_IN_TITLE.finditer(text):
+        cand = (m.group("paren") or m.group("slash") or "").strip(" .,;")
+        cand = re.sub(r"\s+", " ", cand)
+        if cand and _UNIT_OK.match(cand):
+            return cand
+    return ""
+
+
+def find_axis_titles(pdf_path: str, page_number: int,
+                     frame_pdf: tuple[float, float, float, float],
+                     *, reach: float = 78.0) -> tuple[str, str]:
+    """``(x_title, y_title)`` for the plot whose axes frame is ``frame_pdf``.
+
+    The x title sits below the frame in horizontal text; the y title sits to its
+    left, rotated 90 degrees. Numeric strings are skipped so tick labels are not
+    mistaken for titles. Nearest qualifying line wins per axis.
+    """
+    x0, y0, x1, y1 = frame_pdf
+    try:
+        doc = fitz.open(pdf_path)
+        lines = []
+        for block in doc[page_number].get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                text = "".join(s["text"] for s in line["spans"]).strip()
+                if text:
+                    lines.append((text, line["bbox"], line.get("dir", (1.0, 0.0))))
+        doc.close()
+    except Exception:
+        return ("", "")
+
+    def _is_number(t: str) -> bool:
+        return bool(re.fullmatch(r"[-−–+]?\d+(?:[.,]\d+)?%?", t.strip()))
+
+    best_x = best_y = None
+    for text, (bx0, by0, bx1, by1), direction in lines:
+        if _is_number(text) or len(text) > 60:
+            continue
+        horizontal = abs(direction[0]) > abs(direction[1])
+        if horizontal:
+            gap = by0 - y1
+            if 0 <= gap <= reach and bx1 > x0 and bx0 < x1:
+                if best_x is None or gap < best_x[0]:
+                    best_x = (gap, text)
+        else:                                     # rotated: the y-axis title
+            gap = x0 - bx1
+            if -6 <= gap <= reach and by1 > y0 and by0 < y1:
+                if best_y is None or gap < best_y[0]:
+                    best_y = (gap, text)
+    return (best_x[1] if best_x else "", best_y[1] if best_y else "")
+
+
+def find_axis_units(pdf_path: str, page_number: int,
+                    frame_pdf: tuple[float, float, float, float]
+                    ) -> tuple[str, str]:
+    """``(x_unit, y_unit)`` read off the axis titles; "" where not found."""
+    xt, yt = find_axis_titles(pdf_path, page_number, frame_pdf)
+    return parse_axis_unit(xt), parse_axis_unit(yt)

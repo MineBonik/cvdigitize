@@ -178,6 +178,8 @@
           <p class="snap-hint" id="yPos"></p>
         </fieldset>
 
+        <p class="hint" id="unitNote" style="margin:-4px 0 12px"></p>
+
         <div style="margin-bottom:14px">
           <label>scan rate (for the metadata)</label>
           <input type="text" id="scanRate" placeholder="e.g. 50 mV/s">
@@ -443,8 +445,7 @@ async function show(i) {
     $("ex1").value = g.ex1; $("ex2").value = g.ex2;
     $("jy1").value = g.jy1; $("jy2").value = g.jy2;
     $("xlab").value = g.x_label || "E"; $("ylab").value = g.y_label || "j";
-    $("xunit").value = plausibleUnit(g.x_unit, "V");
-    $("yunit").value = plausibleUnit(g.y_unit, "uA/cm2");
+    setUnits(u);
   } else {
     for (const k of ["ex1", "ex2", "jy1", "jy2"]) $(k).value = "";
     // no guess: offer the outermost detected ticks as the anchor positions
@@ -453,8 +454,7 @@ async function show(i) {
     if (yt.length >= 2) { STATE.cal.y1 = yt[0].pos; STATE.cal.y2 = yt[yt.length - 1].pos; }
     if (xt.length >= 2 && xt[0].value != null) { $("ex1").value = xt[0].value; $("ex2").value = xt[xt.length - 1].value; }
     if (yt.length >= 2 && yt[0].value != null) { $("jy1").value = yt[0].value; $("jy2").value = yt[yt.length - 1].value; }
-    $("xunit").value = plausibleUnit(u.axis_titles && u.axis_titles[0], "V");
-    $("yunit").value = plausibleUnit(u.axis_titles && u.axis_titles[1], "uA/cm2");
+    setUnits(u);
   }
   $("scanRate").value = (u.figure_meta && u.figure_meta.scanRate) || "";
 
@@ -466,12 +466,24 @@ async function show(i) {
   STATE.img.src = "/" + u.image + "?v=" + Date.now();
 }
 
-/* Axis titles are scraped text; only offer one as a unit if it looks like one
-   rather than a sentence, so the user is not handed "auto (unverified)". */
-function plausibleUnit(text, fallback) {
-  const t = (text || "").trim();
-  if (!t || t.length > 24 || /unverified|auto|^\(/i.test(t)) return fallback;
-  return t;
+/* Units come from the figure's own axis title or not at all.
+   Guessing here caused real damage: two panels were saved as "uA/cm2" when the
+   papers said "mA cm-2" — right numbers, wrong label, wrong by 1000x, and
+   nothing on screen looked suspicious. A blank box the user must fill is safe;
+   a plausible default they have no reason to doubt is not. */
+function setUnits(u) {
+  const [xu, yu] = u.axis_units || ["", ""];
+  $("xunit").value = xu || "";
+  $("yunit").value = yu || "";
+  const t = u.axis_titles || ["", ""];
+  $("xunit").placeholder = t[0] ? `read it off: ${t[0]}` : "e.g. V";
+  $("yunit").placeholder = t[1] ? `read it off: ${t[1]}` : "e.g. mA cm-2";
+  for (const [id, val] of [["xunit", xu], ["yunit", yu]]) {
+    $(id).style.borderColor = val ? "" : "var(--warn)";
+  }
+  $("unitNote").textContent = (xu && yu)
+    ? "Units read from the axis titles — check them against the figure."
+    : "Units could not be read from this figure. Type them exactly as the axis says.";
 }
 
 function renderCurves(u) {
@@ -589,6 +601,10 @@ $("btnSave").addEventListener("click", async () => {
   for (const [k, what] of [["ex1", "E value 1"], ["ex2", "E value 2"],
                            ["jy1", "j value 1"], ["jy2", "j value 2"]]) {
     if (cal[k] == null) { msg(`${what} is not a number.`, "err"); return; }
+  }
+  if (!cal.x_unit.trim() || !cal.y_unit.trim()) {
+    msg("Fill in both units, exactly as the figure's axis labels write them.", "err");
+    return;
   }
   $("btnSave").disabled = true;
   try {

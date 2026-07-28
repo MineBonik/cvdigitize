@@ -569,3 +569,47 @@ def test_migrate_splits_a_fat_index(tmp_path):
     assert migrated["units"][0]["status"] == "saved"      # progress preserved
     assert len(load_geometry(work, "paper_p0_a")["c_000000"]) >= 2
     assert not needs_migration(load_index(work))          # and it persisted
+
+
+# --------------------------------------------------------------------------- #
+# Axis units. Read off the figure's own axis title, never guessed: two panels
+# were saved as "uA/cm2" when their papers said "mA cm-2" — correct numbers,
+# label wrong by 1000x, and nothing on screen looked wrong.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("title,expected", [
+    ("j (mA cm-2)", "mA cm-2"),
+    ("j (μA cm−2)", "μA cm-2"),
+    ("E (V) (versus RHE)", "V"),
+    ("E / V (vs. RHE)", "V"),
+    ("i / mA", "mA"),
+    ("E/V", "V"),
+])
+def test_parse_axis_unit(title, expected):
+    from cvdigitize.autocalib import parse_axis_unit
+    assert parse_axis_unit(title) == expected
+
+
+@pytest.mark.parametrize("title", ["Potential", "", "versus RHE", "Time"])
+def test_parse_axis_unit_returns_blank_rather_than_guessing(title):
+    """A blank is a prompt to the user; a guess is a silent 1000x error."""
+    from cvdigitize.autocalib import parse_axis_unit
+    assert parse_axis_unit(title) == ""
+
+
+def test_scan_records_axis_units_from_the_figure(tmp_path):
+    papers = tmp_path / "papers"; papers.mkdir()
+    pdf = str(papers / "u_2020_a_1.pdf")
+
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    t = np.linspace(0, 2 * np.pi, 900)
+    for k, colour in enumerate(("red", "blue")):
+        ax.plot(0.5 + 0.42 * np.cos(t),
+                (0.9 + 0.1 * k) * np.sin(t) * (0.6 + 0.4 * np.cos(t)), color=colour, lw=1.0)
+    ax.set_xlim(0, 1); ax.set_ylim(-1.2, 1.2)
+    ax.set_xlabel("E / V")
+    ax.set_ylabel("j (mA cm-2)")
+    fig.tight_layout(); fig.savefig(pdf); plt.close(fig)
+
+    index = scan_folder(str(papers), str(tmp_path / "work"))
+    assert index["units"], "expected a panel"
+    assert index["units"][0]["axis_units"] == ["V", "mA cm-2"]
