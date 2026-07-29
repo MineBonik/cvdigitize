@@ -62,6 +62,10 @@ Deliberately narrower than `batch`: it only ever touches vector figures, where
 extraction is exact and needs no hand-tracing. For scanned/raster figures use
 `studio` instead.
 
+The first run scans the folder, which is the only slow part; after that the
+browser reads one panel at a time. Papers are scanned in parallel across cores
+(`--workers 1` to serialise, e.g. when profiling).
+
 ## Status
 
 | Milestone | What it does | State |
@@ -91,9 +95,9 @@ extraction is exact and needs no hand-tracing. For scanned/raster figures use
 3. **Manual JSON** (`--calibration file.json`) — full control fallback; also
    what you'd use for exotic layouts. `--no-autocalib` disables tier 1.
 
-The only remaining fully-manual case is reading tick label *text* on raster
-figures without typing them (true OCR) — no OCR engine is available in this
-environment, and the crops make the typing trivial.
+Where Tesseract is installed, tier 2's four numbers can also be pre-filled by
+OCR — strictly, and only as a suggestion a human confirms. See "OCR of tick
+labels" below for why it is never treated as authoritative.
 
 ### Metadata (the thread's "longest part")
 
@@ -314,8 +318,9 @@ cvdigitize batch "data\corpus"
 #    browser, one panel at a time (see "Working through a folder" above).
 #    Writes each panel's datapackages on save; re-run to resume where you left off.
 cvdigitize vector-calibrate --in "data\literature_Vladislav"
-#   --rescan     re-detect panels, keeping the status and names you entered
-#   --out DIR    where curves land (default <work>\curves)
+#   --rescan       re-detect panels, keeping the status and names you entered
+#   --out DIR      where curves land (default <work>\curves)
+#   --workers N    parallel scan workers (default CPU count - 1; 1 = sequential)
 ```
 
 (`cvdigitize` above = `cvdigitize.bat` / `.\cvdigitize.ps1`, or

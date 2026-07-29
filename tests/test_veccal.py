@@ -613,3 +613,94 @@ def test_scan_records_axis_units_from_the_figure(tmp_path):
     index = scan_folder(str(papers), str(tmp_path / "work"))
     assert index["units"], "expected a panel"
     assert index["units"][0]["axis_units"] == ["V", "mA cm-2"]
+
+
+# --------------------------------------------------------------------------- #
+# Scan optimisations. These must be invisible in the output: a folder scanned
+# in parallel has to produce exactly what the sequential path produces, in the
+# same order, or the panel list a user sees depends on CPU scheduling.
+# --------------------------------------------------------------------------- #
+def test_candidate_pages_finds_the_figure_page(tmp_path):
+    from cvdigitize.veccal.scan import candidate_pages
+    pdf = str(tmp_path / "c.pdf")
+    _cv_pdf(pdf)
+    assert candidate_pages(pdf) == [0]
+
+
+def test_candidate_pages_skips_a_text_only_page(tmp_path):
+    """A page of prose must not become a work unit."""
+    import fitz
+    from cvdigitize.veccal.scan import candidate_pages
+    pdf = str(tmp_path / "text.pdf")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(fitz.Rect(40, 40, 550, 700), "body text. " * 400, fontsize=9)
+    doc.save(pdf); doc.close()
+    assert candidate_pages(pdf) == []
+
+
+def test_candidate_pages_missing_file_is_empty_not_raising():
+    from cvdigitize.veccal.scan import candidate_pages
+    assert candidate_pages("no/such.pdf") == []
+
+
+def test_parallel_and_sequential_scans_agree(tmp_path):
+    papers = tmp_path / "papers"; papers.mkdir()
+    for name in ("a_2020_x_1.pdf", "b_2021_y_2.pdf", "c_2022_z_3.pdf"):
+        _cv_pdf(str(papers / name))
+
+    seq = scan_folder(str(papers), str(tmp_path / "w1"), workers=1)
+    par = scan_folder(str(papers), str(tmp_path / "w2"), workers=3)
+
+    def shape(index):
+        return [(u["uid"], u["panel"], len(u["curves"]),
+                 [c["name"] for c in u["curves"]]) for u in index["units"]]
+
+    assert shape(seq) == shape(par)          # same panels, same order
+    assert len(seq["units"]) == 3
+
+
+def test_rescan_preserves_include_flags(tmp_path):
+    """Unticking a non-CV curve must survive a re-scan."""
+    papers = tmp_path / "papers"; papers.mkdir()
+    _cv_pdf(str(papers / "p_2020_a_1.pdf"))
+    work = str(tmp_path / "work")
+
+    index = scan_folder(str(papers), work, workers=1)
+    index["units"][0]["curves"][0]["include"] = False
+    with open(os.path.join(work, "index.json"), "w", encoding="utf-8") as f:
+        json.dump(index, f)
+
+    again = scan_folder(str(papers), work, workers=1)
+    assert again["units"][0]["curves"][0]["include"] is False
+
+
+def test_panel_png_is_capped_in_size(tmp_path):
+    from cvdigitize.veccal.scan import MAX_PANEL_PX
+    papers = tmp_path / "papers"; papers.mkdir()
+    _cv_pdf(str(papers / "p_2020_a_1.pdf"))
+    work = str(tmp_path / "work")
+    index = scan_folder(str(papers), work, workers=1)
+    unit = index["units"][0]
+    img = cv2.imread(os.path.join(work, unit["image"]))
+    assert max(img.shape[:2]) <= MAX_PANEL_PX
+    # the recorded crop size stays the TRUE size — the browser's pixel->PDF
+    # maths runs off it, so capping the PNG must not change it
+    assert unit["size"][0] >= img.shape[1]
+
+
+def test_detect_panels_accepts_a_prerendered_page(tmp_path):
+    """Passing image/frames must give the same panels as letting it do the work."""
+    from cvdigitize.ingest import render_page
+    from cvdigitize.raster_extract import detect_all_frames
+    from cvdigitize.vector_extract import detect_panels
+    pdf = str(tmp_path / "p.pdf")
+    _cv_pdf(pdf)
+
+    plain = detect_panels(pdf, 0, min_points=60, min_curve_points=60)
+    img = render_page(pdf, 0, zoom=3.0)
+    frames = detect_all_frames(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY))
+    reused = detect_panels(pdf, 0, min_points=60, min_curve_points=60,
+                           image=img, frames_px=frames)
+    assert [(p.label, len(p.curves)) for p in plain] == \
+           [(p.label, len(p.curves)) for p in reused]

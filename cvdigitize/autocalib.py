@@ -257,15 +257,17 @@ def autocalibrate(pdf_path: str, page_number: int,
 # --------------------------------------------------------------------------- #
 def detect_ticks_for_bbox(pdf_path: str, page_number: int,
                           bbox: tuple[float, float, float, float],
-                          *, zoom: float = 3.0, image=None) -> dict | None:
+                          *, zoom: float = 3.0, image=None,
+                          frames_px=None) -> dict | None:
     """Frame + tick pixel positions for the plot containing ``bbox``.
 
     Renders the page at ``zoom``, finds every axes frame, picks the one that
     best overlaps the curves' bbox, and detects tick marks along its axes.
     Returns ``{image, frame_px, ticks, zoom}`` (render-pixel space) or None.
 
-    ``image`` accepts a page already rendered at ``zoom`` — callers processing
-    several panels of one page pass it to avoid re-rendering per panel.
+    ``image`` accepts a page already rendered at ``zoom``, and ``frames_px`` a
+    frame list already detected on it — callers processing several panels of one
+    page pass both to avoid repeating either per panel. Purely an optimisation.
     """
     import cv2
 
@@ -274,7 +276,7 @@ def detect_ticks_for_bbox(pdf_path: str, page_number: int,
 
     img = render_page(pdf_path, page_number, zoom=zoom) if image is None else image
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    frames = detect_all_frames(gray)
+    frames = detect_all_frames(gray) if frames_px is None else frames_px
     if not frames:
         return None
 

@@ -428,6 +428,8 @@ def detect_panels(
     min_points: int = 60,
     zoom: float = 3.0,
     min_curve_points: int = 150,
+    image=None,
+    frames_px=None,
 ) -> list[Panel]:
     """Detect each plot's axes frame and assign curves to the frame that holds
     them — automatic panel splitting for ANY layout (grids, or several
@@ -441,6 +443,11 @@ def detect_panels(
 
     Falls back to a single whole-page panel when no frames are found, so the
     caller always gets at least one panel to work with.
+
+    ``image`` and ``frames_px`` let a caller that already rendered this page at
+    ``zoom``, or already ran frame detection on it, hand those in instead of
+    paying for them twice. Both were the two most expensive steps of a folder
+    scan; passing them is purely an optimisation and changes no results.
     """
     import cv2
 
@@ -451,9 +458,10 @@ def detect_panels(
     if not groups:
         return []
 
-    img = render_page(pdf_path, page_number, zoom=zoom)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    frames_px = detect_all_frames(gray)
+    if frames_px is None:
+        img = render_page(pdf_path, page_number, zoom=zoom) if image is None else image
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        frames_px = detect_all_frames(gray)
     # to PDF points, with a small outward margin (curves can touch the border)
     margin = 3.0
     frames = [(f[0] / zoom - margin, f[1] / zoom - margin,
@@ -466,7 +474,11 @@ def detect_panels(
     # reading order for labels
     order = sorted(range(len(frames)),
                    key=lambda i: (round(frames[i][1] / 20), frames[i][0]))
-    label_of = {fi: chr(ord("a") + k) for k, fi in enumerate(order)}
+    # panel_label continues "aa", "ab", ... past the 26th frame. A bare
+    # chr(ord("a") + k) emitted control characters there, and the label goes
+    # straight into a directory name — pages where frame detection finds 27+
+    # frames really do occur (climent_2017 p1 finds 20).
+    label_of = {fi: panel_label(k, 0, len(order) or 1) for k, fi in enumerate(order)}
 
     panels: dict[int, dict[tuple, CurveGroup]] = {i: {} for i in range(len(frames))}
     for g in groups:

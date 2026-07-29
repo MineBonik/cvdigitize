@@ -260,7 +260,7 @@ def make_server(work_dir: str, out_dir: str, *, port: int = 0,
 def run(source_folder: str, work_dir: str, out_dir: str, *, port: int = 8756,
         rescan: bool = False, cv_threshold: float = 0.08,
         open_browser: bool = True, resample: int = 1000,
-        resample_mode: str = "arclength") -> int:
+        resample_mode: str = "arclength", workers: int | None = None) -> int:
     """Scan if needed, then serve the calibration UI until interrupted."""
     if rescan or not os.path.exists(index_path(work_dir)):
         if not source_folder:
@@ -274,8 +274,8 @@ def run(source_folder: str, work_dir: str, out_dir: str, *, port: int = 8756,
         def progress(done, total, label):
             print(f"  [{done:>3}/{total}] {label}")
 
-        index = scan_folder(source_folder, work_dir,
-                            cv_threshold=cv_threshold, progress=progress)
+        index = scan_folder(source_folder, work_dir, cv_threshold=cv_threshold,
+                            progress=progress, workers=workers)
         units = index["units"]
         pre = sum(1 for u in units if u.get("calib_source") != "none")
         papers = len({u["stem"] for u in units})
