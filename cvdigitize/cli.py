@@ -789,7 +789,8 @@ def cmd_vector_calibrate(args):
                port=args.port, rescan=args.rescan,
                cv_threshold=args.cv_threshold,
                open_browser=not args.no_open,
-               resample=args.resample, resample_mode=args.resample_mode)
+               resample=args.resample, resample_mode=args.resample_mode,
+               workers=args.workers)
 
 
 def cmd_batch(args):
@@ -1006,6 +1007,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="resample point count per curve (0=off)")
     pv.add_argument("--resample-mode", choices=["arclength", "uniform-E"],
                     default="arclength")
+    pv.add_argument("--workers", type=int, default=None,
+                    help="parallel scan workers (default: CPU count - 1; "
+                         "use 1 to scan one paper at a time)")
     pv.add_argument("--port", type=int, default=8756)
     pv.add_argument("--no-open", action="store_true",
                     help="don't auto-open a browser tab")

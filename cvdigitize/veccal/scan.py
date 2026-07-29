@@ -31,17 +31,19 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 
+import cv2
+import fitz
 import numpy as np
 
 from ..autocalib import (find_axis_label_sets, find_axis_units,
                          match_calibration)
 from ..ingest import render_page
+from ..raster_extract import detect_all_frames
 from ..metadata import (detect_plot_legend, extract_figure_metadata,
                         legend_for_panel, parse_curve_legend)
 from ..paper_meta import extract_paper_metadata
 from ..postprocess import dedupe, keep_main_components, loop_metrics, order_curve
-from ..vector_extract import (color_name, detect_panels, find_figure_pages,
-                              union_bbox)
+from ..vector_extract import color_name, detect_panels, union_bbox
 
 ZOOM = 3.0
 #: PDF points of margin kept around a panel's frame so its tick labels, axis
@@ -201,11 +203,16 @@ def _axis_units(pdf: str, page: int, frame_pdf) -> tuple[str, str]:
         return ("", "")
 
 
-def _tick_detection(pdf: str, page: int, bbox, img):
-    """Axes frame + tick-mark positions for a panel, reusing the page render."""
+def _tick_detection(pdf: str, page: int, bbox, img, frames_px=None):
+    """Axes frame + tick-mark positions for a panel.
+
+    Reuses the page render and the frame detection the scan already did, so a
+    page with four panels pays for neither four times over.
+    """
     from ..autocalib import detect_ticks_for_bbox
     try:
-        return detect_ticks_for_bbox(pdf, page, bbox, zoom=ZOOM, image=img)
+        return detect_ticks_for_bbox(pdf, page, bbox, zoom=ZOOM, image=img,
+                                     frames_px=frames_px)
     except Exception:
         return None
 
@@ -380,27 +387,40 @@ MIN_PANEL_H_PT = 55.0
 def candidate_pages(pdf: str) -> list[int]:
     """Pages of ``pdf`` that plausibly hold a vector figure.
 
-    ``vector_extract.find_figure_pages`` requires two or more *non-black*
-    stroke colours, which is a good filter for multi-curve colour figures but
-    silently drops the classic all-black voltammogram this corpus is full of.
-    Colour count says nothing about whether something is a CV, so here the
-    candidate test is colour-blind — just "enough vector geometry to be a
-    figure" — and the loop-score gate downstream decides what is actually a CV.
-    """
-    from ..ingest import classify_pdf
+    One ``get_drawings()`` pass per page, counting line/curve items. Nothing
+    here looks at colour: ``vector_extract.find_figure_pages`` requires two or
+    more *non-black* stroke colours, which silently drops the classic all-black
+    voltammogram this corpus is full of, and colour count says nothing about
+    whether something is a CV — the loop-score gate downstream decides that.
 
-    pages: set[int] = set()
+    This used to also call ``find_figure_pages``, a second full-document parse
+    costing 3.5 s on a 57-page PDF. Measured over the 52-paper corpus it
+    contributed **zero** pages that this item count did not already find (its
+    result is a strict subset), so it is gone rather than merged.
+    """
     try:
-        pages.update(find_figure_pages(pdf))
+        doc = fitz.open(pdf)
+    except Exception:
+        return []
+    pages: list[int] = []
+    try:
+        for pno in range(doc.page_count):
+            n_items = 0
+            for d in doc[pno].get_drawings():
+                for it in d["items"]:
+                    if it[0] in ("l", "c"):
+                        n_items += 1
+                        if n_items >= MIN_CURVE_ITEMS:
+                            break
+                if n_items >= MIN_CURVE_ITEMS:
+                    break
+            if n_items >= MIN_CURVE_ITEMS:
+                pages.append(pno)
     except Exception:
         pass
-    try:
-        for info in classify_pdf(pdf):
-            if info.n_curve_items >= MIN_CURVE_ITEMS:
-                pages.add(info.number)
-    except Exception:
-        pass
-    return sorted(pages)
+    finally:
+        doc.close()
+    return pages
 
 
 def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
@@ -415,9 +435,20 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
     units: list[PanelUnit] = []
 
     for page in pages:
+        # Render once and detect frames once per page. detect_panels and the
+        # tick detector both need these, and letting each do its own cost ~10 s
+        # of the 51 s measured over three papers (frames were detected 28 times
+        # for 14 panels, and pages were rendered two or three times each).
+        try:
+            img = render_page(pdf, page, zoom=ZOOM)
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            frames_px = detect_all_frames(gray)
+        except Exception:
+            continue
         try:
             panels = detect_panels(pdf, page, min_points=min_points,
-                                   min_curve_points=max(60, min_points))
+                                   min_curve_points=max(60, min_points),
+                                   image=img, frames_px=frames_px)
         except Exception:
             continue
         if not panels:
@@ -457,7 +488,6 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
         fig_no = _fig_number(caption)
         cap_legend = parse_curve_legend(caption) if fmeta else {}
 
-        img = render_page(pdf, page, zoom=ZOOM)
         # Drop the panel letter only for a figure that really is a single plot.
         # If the page had several panels and the CV filter left one, that letter
         # still identifies which sub-plot of the published figure this came from.
@@ -503,7 +533,7 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
                     source = "auto-text"
 
             if bbox and (guess is None or not x_ticks or not y_ticks):
-                det = _tick_detection(pdf, page, bbox, img)
+                det = _tick_detection(pdf, page, bbox, img, frames_px)
                 if det is not None:
                     z = det["zoom"]
                     if not x_ticks:
@@ -538,9 +568,23 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
     return units
 
 
+#: Longest edge kept in a panel PNG. The browser stretches the image back to
+#: the crop's true pixel size, so this only affects how sharp the background
+#: looks — never the coordinate maths, which runs off ``size``/``zoom``/
+#: ``origin``. Panels were reaching 1.9 MB (16 MB for 84), and decoding that per
+#: panel is visible on a slow machine; 1400 px still reads tick labels easily.
+MAX_PANEL_PX = 1400
+
+
 def _write_png(path: str, rgb: np.ndarray) -> None:
-    import cv2
-    cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    h, w = rgb.shape[:2]
+    longest = max(h, w)
+    if longest > MAX_PANEL_PX:
+        scale = MAX_PANEL_PX / longest
+        rgb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                [cv2.IMWRITE_PNG_COMPRESSION, 6])
 
 
 def index_path(work_dir: str) -> str:
@@ -603,14 +647,50 @@ def migrate_index(work_dir: str) -> dict:
     return index
 
 
+def _scan_one(args) -> list[dict]:
+    """Scan one PDF to plain dicts. Module-level so it can be pickled to a worker."""
+    pdf, work_dir, cv_threshold = args
+    try:
+        return [_split_geometry(work_dir, asdict(u))
+                for u in scan_pdf(pdf, work_dir, cv_threshold=cv_threshold)]
+    except Exception:
+        # One unreadable paper must not abort a folder that takes minutes.
+        return []
+
+
+def _carry_over(new: dict, old: dict | None) -> dict:
+    """Preserve the human's work across a re-scan: status, names, calibration."""
+    if not old:
+        return new
+    new["status"] = old.get("status", "pending")
+    for new_c, old_c in zip(new["curves"], old.get("curves", [])):
+        if old_c.get("color") == new_c.get("color"):
+            new_c["name"] = old_c.get("name", new_c["name"])
+            new_c["sample"] = old_c.get("sample", new_c["sample"])
+            if "include" in old_c:
+                new_c["include"] = old_c["include"]
+    if old.get("saved_calibration"):
+        new["saved_calibration"] = old["saved_calibration"]
+    if old.get("saved_curves"):
+        new["saved_curves"] = old["saved_curves"]
+    return new
+
+
 def scan_folder(folder: str, work_dir: str, *, cv_threshold: float = 0.08,
-                progress=None) -> dict:
+                progress=None, workers: int | None = None) -> dict:
     """Scan every PDF in ``folder``; write ``work_dir/index.json``.
 
     ``progress`` is an optional ``callable(done, total, label)`` for CLI output.
-    Returns the index dict. Re-scanning is safe: it rebuilds from the PDFs, but
-    any per-unit ``status`` already recorded is carried over so a part-finished
-    calibration session is not reset.
+    Re-scanning is safe: it rebuilds from the PDFs but carries over any status,
+    edited name or confirmed calibration already recorded, so a part-finished
+    session is never reset.
+
+    Papers are independent, so they are scanned in parallel across processes —
+    the work is CPU-bound (PDF parsing, page rendering, frame detection) plus
+    Tesseract subprocesses, none of which share state. ``workers=1`` forces the
+    sequential path, which is what the tests use and what makes a profile
+    readable. Results are ordered by filename regardless of completion order,
+    so the panel list a user sees does not depend on scheduling.
     """
     pdfs = sorted(glob.glob(os.path.join(folder, "*.pdf")))
     os.makedirs(work_dir, exist_ok=True)
@@ -624,23 +704,29 @@ def scan_folder(folder: str, work_dir: str, *, cv_threshold: float = 0.08,
         except Exception:
             previous = {}
 
-    units: list[dict] = []
-    for i, pdf in enumerate(pdfs, 1):
-        if progress:
-            progress(i, len(pdfs), os.path.basename(pdf))
-        for unit in scan_pdf(pdf, work_dir, cv_threshold=cv_threshold):
-            d = _split_geometry(work_dir, asdict(unit))
-            old = previous.get(d["uid"])
-            if old:
-                d["status"] = old.get("status", "pending")
-                # keep the names/samples the user already edited
-                for new_c, old_c in zip(d["curves"], old.get("curves", [])):
-                    if old_c.get("color") == new_c.get("color"):
-                        new_c["name"] = old_c.get("name", new_c["name"])
-                        new_c["sample"] = old_c.get("sample", new_c["sample"])
-                if old.get("saved_calibration"):
-                    d["saved_calibration"] = old["saved_calibration"]
-            units.append(d)
+    if workers is None:
+        workers = max(1, min(len(pdfs), (os.cpu_count() or 2) - 1))
+
+    jobs = [(pdf, work_dir, cv_threshold) for pdf in pdfs]
+    per_pdf: list[list[dict]] = [[] for _ in pdfs]
+
+    if workers <= 1 or len(pdfs) <= 1:
+        for i, job in enumerate(jobs):
+            if progress:
+                progress(i + 1, len(pdfs), os.path.basename(job[0]))
+            per_pdf[i] = _scan_one(job)
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_scan_one, job): i for i, job in enumerate(jobs)}
+            for done, fut in enumerate(as_completed(futures), 1):
+                i = futures[fut]
+                per_pdf[i] = fut.result()
+                if progress:
+                    progress(done, len(pdfs), os.path.basename(jobs[i][0]))
+
+    units = [_carry_over(d, previous.get(d["uid"]))
+             for group in per_pdf for d in group]
 
     index = {"source_folder": folder, "n_pdfs": len(pdfs), "units": units}
     with open(index_path(work_dir), "w", encoding="utf-8") as f:
