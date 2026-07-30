@@ -3,7 +3,6 @@
 #           .venv\Scripts\python.exe -m pip install -r requirements.txt
 pymupdf>=1.28               # PDF parsing, vector drawing + text-layer extraction (fitz)
 numpy>=2.0                  # geometry / arrays
-matplotlib>=3.9              # overlay/report images
 opencv-python-headless>=4.9 # plot-frame/tick detection on the rendered page
 
 # --- optional: automatic OCR of tick labels (vector-calibrate pre-fill) ---
@@ -12,7 +11,9 @@ opencv-python-headless>=4.9 # plot-frame/tick detection on the rendered page
 #                           # present; the tool works fully without it.
 
 # --- dev / tests ---
-# pytest>=8                 # test suite (not needed to run the tool)
+# pytest>=8                 # test suite
+# matplotlib>=3.9           # tests only: builds the synthetic vector PDFs they
+#                           # run against. The tool itself no longer plots.
 
 # --- NOT required (deliberately avoided) ---
 # svgdigitizer   — unnecessary: we parse PDF vector geometry directly
