@@ -1,4 +1,4 @@
-"""Tests for loop_metrics (CV-likeness), the classifier fields, and batch."""
+"""Tests for loop_metrics (CV-likeness), the page classifier, and the CLI."""
 import os
 
 import numpy as np
@@ -57,17 +57,47 @@ def test_classifier_has_largest_image_frac(tmp_path):
     assert 0.0 <= infos[0].largest_image_frac <= 1.0
 
 
-def test_batch_builds_gallery(tmp_path):
+def test_info_reports_the_figure_page(tmp_path, capsys):
+    """`info` must agree with what a scan would find — it is the pre-flight check."""
     import argparse
-    from cvdigitize.cli import cmd_batch
+    from cvdigitize.cli import cmd_info
+    pdf = str(tmp_path / "p.pdf")
+    _make_pdf(pdf)
+    rc = cmd_info(argparse.Namespace(pdf=pdf, quick=False, cv_threshold=0.08))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Candidate figure pages: [0]" in out
+    assert "curve(s), loop score" in out
+    assert "vector-calibrate" in out          # points at the next step
+
+
+def test_info_on_a_missing_file_is_an_error_not_a_crash(tmp_path):
+    import argparse
+    from cvdigitize.cli import cmd_info
+    rc = cmd_info(argparse.Namespace(pdf=str(tmp_path / "nope.pdf"),
+                                     quick=False, cv_threshold=0.08))
+    assert rc == 2
+
+
+def test_info_quick_skips_panel_detection(tmp_path, capsys):
+    import argparse
+    from cvdigitize.cli import cmd_info
+    pdf = str(tmp_path / "p.pdf")
+    _make_pdf(pdf)
+    cmd_info(argparse.Namespace(pdf=pdf, quick=True, cv_threshold=0.08))
+    out = capsys.readouterr().out
+    assert "--quick" in out
+    assert "loop score" not in out
+
+
+def test_bare_path_dispatch(tmp_path):
+    """A folder means 'scan it'; a file means 'inspect it'."""
+    from cvdigitize.cli import _with_implicit_command
     d = tmp_path / "papers"
     d.mkdir()
-    _make_pdf(str(d / "a.pdf"))
-    _make_pdf(str(d / "b.pdf"))
-    out = tmp_path / "out"
-    rc = cmd_batch(argparse.Namespace(dir=str(d), out=str(out)))
-    assert rc == 0
-    assert (out / "index.html").exists()
-    html = (out / "index.html").read_text(encoding="utf-8")
-    assert "batch survey" in html
-    assert "loop score" in html
+    assert _with_implicit_command([str(d)]) == ["vector-calibrate", "--in", str(d)]
+    assert _with_implicit_command(["paper.pdf"]) == ["info", "paper.pdf"]
+    # explicit commands and flags pass through untouched
+    assert _with_implicit_command(["info", "x.pdf"]) == ["info", "x.pdf"]
+    assert _with_implicit_command(["--help"]) == ["--help"]
+    assert _with_implicit_command([]) == []
