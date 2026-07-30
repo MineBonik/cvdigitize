@@ -54,8 +54,15 @@ from .postprocess import (order_curve, dedupe, resample_arclength,
                           loop_metrics)
 from .calibrate import Calibration, calibration_from_anchors
 from .package import write_datapackage, write_csv, CurveMeta
-from .raster_extract import (find_image_regions, extract_all_panel_curves,
-                             crop_tick_labels)
+from .plotframe import crop_tick_labels
+# NOTE (vector-only refactor, in progress): raster_extract.py was removed on
+# this branch, so find_image_regions/extract_all_panel_curves no longer exist.
+# _extract_raster() below still references them and will NameError if actually
+# invoked. Left as-is deliberately -- deciding what (if anything) of the raster
+# CLI surface (extract's raster branch, batch, studio, grid) survives is the
+# CLI refactor step, not done yet. This import fix only unbreaks package
+# loading so the rest of the tool (vector-calibrate, info, vector extract)
+# keeps working in the meantime.
 
 
 # --------------------------------------------------------------------------- #
@@ -645,7 +652,7 @@ def _extract_vector(args, pdf, page, stem, out_dir):
             # emit tick-label crops so the user can rerun with --x-ticks/--y-ticks
             detection = detection or detect_ticks_for_bbox(pdf, page, bbox)
             if detection is not None:
-                from .raster_extract import crop_tick_labels
+                from .plotframe import crop_tick_labels
                 crops = crop_tick_labels(detection["image"], detection["frame_px"],
                                          detection["ticks"], zoom=detection["zoom"])
                 if crops:

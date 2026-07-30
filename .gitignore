@@ -9,32 +9,23 @@ __pycache__/
 .venv/
 venv/
 
-# Generated outputs (kept out of history; regenerate with the scripts/CLI)
+# Generated outputs (kept out of history; regenerate with vector-calibrate)
 data/out/
 
-# CV Studio per-paper workspaces (regenerate by opening the paper again)
-data/workspace/
-
-# Benchmark report extraction cache (regenerated on demand)
-scripts/.report_cache/
-
-# Downloaded test corpus (large; fetch with scripts, not committed)
+# Local data from now-removed raster/benchmark tooling (nothing regenerates
+# these; harmless leftovers, just not part of the repo)
 data/corpus/
+data/echemdb/
+data/workspace/
 
 # OS
 Thumbs.db
 .DS_Store
 
-# Cloned external dataset (echemdb ground truth) - not part of this repo
-data/echemdb/
-
-# Copyrighted source papers supplied for benchmarking - not part of this repo
+# Copyrighted source papers - not part of this repo
 data/papers_additional_after_request/
 data/literature_Vladislav/
 data/literature_Vladislav.zip
 
 # Claude Code local dev config (launch.json etc.)
 .claude/
-
-# Experimental ML tracer checkpoint (regenerate: scripts/experimental/ml_tracer.py train)
-scripts/experimental/*.pt

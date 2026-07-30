@@ -74,7 +74,7 @@ def test_end_to_end_on_matplotlib_pdf(tmp_path):
 
 
 def test_regular_subset_filters_stray():
-    from cvdigitize.raster_extract import _regular_subset
+    from cvdigitize.plotframe import _regular_subset
     ticks = [100, 150, 200, 250, 300]
     with_stray = sorted(ticks + [137, 262])
     out = _regular_subset(with_stray)
