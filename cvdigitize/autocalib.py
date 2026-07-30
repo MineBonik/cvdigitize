@@ -272,7 +272,7 @@ def detect_ticks_for_bbox(pdf_path: str, page_number: int,
     import cv2
 
     from .ingest import render_page
-    from .raster_extract import detect_all_frames, detect_axis_ticks
+    from .plotframe import detect_all_frames, detect_axis_ticks
 
     img = render_page(pdf_path, page_number, zoom=zoom) if image is None else image
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)

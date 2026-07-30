@@ -168,7 +168,7 @@ def read_axis_values(crops: dict, *, min_conf: float = 0.4
                      ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
     """Read the four outer tick labels into ``(x_lo, x_hi)`` and ``(y_lo, y_hi)``.
 
-    ``crops`` is the dict from :func:`raster_extract.crop_tick_labels`
+    ``crops`` is the dict from :func:`plotframe.crop_tick_labels`
     (keys x_lo/x_hi/y_lo/y_hi). Returns ``(x_pair, y_pair)``; a pair is None
     unless *both* of its labels read as numbers above ``min_conf`` — so an axis
     is calibrated by OCR only when fully and confidently read.

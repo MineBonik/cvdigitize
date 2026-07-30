@@ -57,46 +57,6 @@ def test_order_curve_single_and_empty():
     assert np.allclose(order_curve([one]), one)
 
 
-def test_ink_aware_prefers_on_ink_continuation_over_nearer_chord():
-    # ink runs along the row y=50; A ends at (50,50). B continues it on ink,
-    # C is a stray whose endpoint is nearer in raw distance but off the ink.
-    ink = np.zeros((100, 120), bool)
-    ink[49:52, 10:96] = True                     # the real curve's ink band
-    A = np.array([[10.0, 50], [50.0, 50]])
-    B = np.array([[60.0, 50], [95.0, 50]])       # on-ink continuation (dist 10)
-    C = np.array([[50.0, 42], [50.0, 20]])       # off-ink stray (endpoint dist 8)
-
-    plain = order_curve([A, B, C])               # pure nearest -> jumps to C first
-    inked = order_curve([A, B, C], ink_mask=ink) # ink-aware -> continues onto B
-    # after A's tail (50,50): plain teleports up to C(50,42); ink-aware goes to B(60,50)
-    def point_after_A(res):
-        i = np.where((res[:, 0] == 50) & (res[:, 1] == 50))[0]
-        return res[i[-1] + 1] if len(i) and i[-1] + 1 < len(res) else None
-    assert point_after_A(plain)[1] < 50          # plain heads up toward C
-    assert point_after_A(inked)[0] == 60         # ink-aware heads along the ink to B
-
-
-def test_ink_aware_dash_gap_is_not_reported_as_chord():
-    # a dashed curve: short on-tangent gaps between dashes must NOT be flagged.
-    ink = np.zeros((100, 240), bool)
-    parts = []
-    for x0 in range(10, 220, 40):                # dashes with ~15px gaps
-        ink[49:52, x0:x0 + 25] = True
-        parts.append(np.array([[float(x0), 50], [float(x0 + 24), 50]]))
-    _, gaps = order_curve(parts, ink_mask=ink, return_gaps=True)
-    assert gaps == []                            # every gap is dash-sized, none a chord
-
-
-def test_ink_aware_reports_unavoidable_long_chord_as_gap():
-    ink = np.zeros((100, 400), bool)
-    ink[49:52, 10:60] = True
-    ink[49:52, 330:390] = True                   # a big empty span between two runs
-    A = np.array([[10.0, 50], [58.0, 50]])
-    B = np.array([[332.0, 50], [388.0, 50]])
-    _, gaps = order_curve([A, B], ink_mask=ink, return_gaps=True)
-    assert len(gaps) == 1                         # the only join is a long off-ink chord
-
-
 def test_dedupe_removes_consecutive_duplicates():
     xy = np.array([[0, 0], [0, 0], [1, 1], [1, 1], [2, 2]], float)
     out = dedupe(xy)

@@ -38,7 +38,7 @@ import numpy as np
 from ..autocalib import (find_axis_label_sets, find_axis_units,
                          match_calibration)
 from ..ingest import render_page
-from ..raster_extract import detect_all_frames
+from ..plotframe import detect_all_frames
 from ..metadata import (detect_plot_legend, extract_figure_metadata,
                         legend_for_panel, parse_curve_legend)
 from ..paper_meta import extract_paper_metadata
@@ -226,7 +226,7 @@ def _ocr_calibration(det: dict):
     """
     from .. import ocr
     from ..autocalib import assisted_tick_calibration
-    from ..raster_extract import crop_tick_labels
+    from ..plotframe import crop_tick_labels
 
     if not ocr.available():
         return None

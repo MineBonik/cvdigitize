@@ -2,14 +2,11 @@
 # Install:  py -3.11 -m venv .venv
 #           .venv\Scripts\python.exe -m pip install -r requirements.txt
 pymupdf>=1.28               # PDF parsing, vector drawing + text-layer extraction (fitz)
-lxml>=6.0                   # SVG/XML handling
 numpy>=2.0                  # geometry / arrays
-scipy>=1.13                 # nearest-neighbour metric (verification), interpolation
-matplotlib>=3.9             # overlays, digitized-curve plots, reports
-opencv-python-headless>=4.9 # raster: frame/tick detection, colour masks, components
-scikit-image>=0.22          # raster: curve skeletonization
+matplotlib>=3.9              # overlay/report images
+opencv-python-headless>=4.9 # plot-frame/tick detection on the rendered page
 
-# --- optional: automatic OCR of raster tick labels ---
+# --- optional: automatic OCR of tick labels (vector-calibrate pre-fill) ---
 # pytesseract>=0.3          # Python wrapper; ALSO needs the Tesseract binary
 #                           # (winget/conda/apt "tesseract"). Auto-enabled when
 #                           # present; the tool works fully without it.

@@ -117,24 +117,7 @@ def keep_main_components(polylines: list[np.ndarray], *, tol_frac: float = 0.05,
 # ---------------------------------------------------------------------------
 # 1. Stitch arbitrary-order sub-paths into a single ordered polyline
 # ---------------------------------------------------------------------------
-def _off_ink_length(dt: np.ndarray, tol: float, p0: np.ndarray, p1: np.ndarray) -> float:
-    """Length of the straight p0->p1 segment that runs off the ink (dist > tol).
-
-    Uses the precomputed distance-to-ink transform ``dt``. A join between two
-    dashes of one dashed curve crosses only a short off-ink gap; a chord leaping
-    across the empty plot crosses a long one — this is what tells them apart."""
-    h, w = dt.shape
-    d = float(np.hypot(*(p1 - p0)))
-    n = max(2, int(d / 2.0))
-    xs = np.clip(np.round(np.linspace(p0[0], p1[0], n)).astype(int), 0, w - 1)
-    ys = np.clip(np.round(np.linspace(p0[1], p1[1], n)).astype(int), 0, h - 1)
-    off = dt[ys, xs] > tol
-    return float(off.mean()) * d
-
-
-def order_curve(polylines: list[np.ndarray], *, ink_mask: np.ndarray | None = None,
-                off_ink_weight: float = 4.0, gap_frac: float = 0.06,
-                return_gaps: bool = False):
+def order_curve(polylines: list[np.ndarray]) -> np.ndarray:
     """Greedily connect sub-paths end-to-end into one ordered (N, 2) array.
 
     Starts at the left-most endpoint (near the lower potential limit) and
@@ -142,39 +125,19 @@ def order_curve(polylines: list[np.ndarray], *, ink_mask: np.ndarray | None = No
     sub-path when it is joined by its tail. This recovers the sweep order even
     though the PDF stores the segments shuffled.
 
-    Without ``ink_mask`` this always incorporates every input sub-path by pure
-    nearest-endpoint distance — it trusts its caller (``vector_extract``'s
-    colour/shape filters, ``keep_main_components``) to have already excluded
-    anything that isn't really part of the curve. (An earlier attempt to reject
-    "implausibly large" gaps here by a blind distance threshold was reverted: a
-    curve's own internal gap and an unrelated shape's distance aren't separable
-    by distance alone.)
-
-    With ``ink_mask`` (the ink the sub-paths were traced from) the join choice
-    becomes *ink-aware*: each candidate join is charged ``distance +
-    off_ink_weight * (length of the join that runs across empty, off-ink space)``.
-    A short dash-gap join stays cheap, so dashed curves still stitch correctly;
-    a long chord across the empty plot becomes expensive and loses to any on-ink
-    alternative. This is the ink-evidence version of gap rejection — it succeeds
-    where the blind distance threshold failed because it can tell "short hop over
-    a dash gap" from "long leap over emptiness". With ``return_gaps=True`` the
-    return is ``(polyline, gaps)`` where ``gaps`` lists the joins that still had
-    to cross a long off-ink span (chords with no on-ink alternative), for the
-    caller to mark distinctly rather than present as traced ink.
+    Always incorporates every input sub-path by pure nearest-endpoint distance
+    — it trusts its caller (``vector_extract``'s colour/shape filters,
+    ``keep_main_components``) to have already excluded anything that isn't
+    really part of the curve. (An earlier attempt to reject "implausibly
+    large" gaps here by a blind distance threshold was reverted: a curve's own
+    internal gap and an unrelated shape's distance aren't separable by
+    distance alone.)
     """
     segs = [np.asarray(p, dtype=float) for p in polylines if len(p) >= 2]
     if not segs:
-        return (np.empty((0, 2)), []) if return_gaps else np.empty((0, 2))
+        return np.empty((0, 2))
     if len(segs) == 1:
-        return (segs[0].copy(), []) if return_gaps else segs[0].copy()
-
-    dt = tol = gap_thresh = None
-    if ink_mask is not None:
-        from .fidelity import _distance_to_ink
-        dt = _distance_to_ink(np.asarray(ink_mask).astype(bool))
-        diag = float(np.hypot(*dt.shape)) or 1.0
-        tol = max(3.0, 0.005 * diag)
-        gap_thresh = gap_frac * diag
+        return segs[0].copy()
 
     # Choose the starting segment + orientation from the global left-most endpoint.
     best_i, best_flip, best_x = 0, False, np.inf
@@ -189,36 +152,25 @@ def order_curve(polylines: list[np.ndarray], *, ink_mask: np.ndarray | None = No
     chain = [first]
     used[best_i] = True
     tail = first[-1]
-    gaps: list = []
-
-    def _cost(endpoint):
-        d = float(np.hypot(*(tail - endpoint)))
-        if dt is None:
-            return d, 0.0
-        off = _off_ink_length(dt, tol, tail, endpoint)
-        return d + off_ink_weight * off, off
 
     for _ in range(len(segs) - 1):
-        best_j, best_flip, best_c, best_off = -1, False, np.inf, 0.0
+        best_j, best_flip, best_c = -1, False, np.inf
         for j, s in enumerate(segs):
             if used[j]:
                 continue
-            cs, offs = _cost(s[0])
-            ce, offe = _cost(s[-1])
+            cs = float(np.hypot(*(tail - s[0])))
+            ce = float(np.hypot(*(tail - s[-1])))
             if cs < best_c:
-                best_c, best_j, best_flip, best_off = cs, j, False, offs
+                best_c, best_j, best_flip = cs, j, False
             if ce < best_c:
-                best_c, best_j, best_flip, best_off = ce, j, True, offe
+                best_c, best_j, best_flip = ce, j, True
 
         seg = segs[best_j][::-1] if best_flip else segs[best_j]
-        if gap_thresh is not None and best_off > gap_thresh:
-            gaps.append((tuple(np.round(tail, 1)), tuple(np.round(seg[0], 1))))
         chain.append(seg)
         used[best_j] = True
         tail = seg[-1]
 
-    out = np.vstack(chain)
-    return (out, gaps) if return_gaps else out
+    return np.vstack(chain)
 
 
 def dedupe(xy: np.ndarray, tol: float = 1e-9) -> np.ndarray:

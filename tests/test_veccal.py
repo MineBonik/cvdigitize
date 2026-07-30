@@ -692,7 +692,7 @@ def test_panel_png_is_capped_in_size(tmp_path):
 def test_detect_panels_accepts_a_prerendered_page(tmp_path):
     """Passing image/frames must give the same panels as letting it do the work."""
     from cvdigitize.ingest import render_page
-    from cvdigitize.raster_extract import detect_all_frames
+    from cvdigitize.plotframe import detect_all_frames
     from cvdigitize.vector_extract import detect_panels
     pdf = str(tmp_path / "p.pdf")
     _cv_pdf(pdf)

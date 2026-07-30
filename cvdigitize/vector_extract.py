@@ -452,7 +452,7 @@ def detect_panels(
     import cv2
 
     from .ingest import render_page
-    from .raster_extract import detect_all_frames
+    from .plotframe import detect_all_frames
 
     groups = extract_color_groups(pdf_path, page_number, min_points=min_points)
     if not groups:
