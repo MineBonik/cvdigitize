@@ -252,7 +252,7 @@ function draw() {
     g.strokeStyle = "rgba(0,255,140,0.9)"; g.lineWidth = 0.8; g.stroke();
   }
 
-  // tick snap targets
+  // detected ticks, drawn purely as a visual reference — clicks do not snap
   g.font = "11px ui-monospace, monospace";
   for (const t of u.x_ticks || []) {
     const x = toCropX(u, t.pos);
@@ -286,24 +286,16 @@ $("cv").addEventListener("click", ev => {
   const cx = (ev.clientX - r.left) * sx, cy = (ev.clientY - r.top) * sy;
   const horizontal = STATE.pick.startsWith("x");
 
-  // snap to the nearest detected tick when the click lands close to one,
-  // so a confirmed anchor sits exactly on the tick, not a pixel beside it
-  const ticks = horizontal ? (u.x_ticks || []) : (u.y_ticks || []);
-  const clicked = horizontal ? toPdfX(u, cx) : toPdfY(u, cy);
-  let best = null, bestD = Infinity;
-  for (const t of ticks) {
-    const d = Math.abs(t.pos - clicked) * u.zoom;
-    if (d < bestD) { bestD = d; best = t; }
-  }
-  const snapped = (best && bestD <= 10);
-  STATE.cal[STATE.pick] = snapped ? best.pos : clicked;
-  if (snapped && best.value != null) {
-    const box = horizontal ? (STATE.pick === "x1" ? "ex1" : "ex2")
-                           : (STATE.pick === "y1" ? "jy1" : "jy2");
-    if (!$(box).value.trim()) $(box).value = String(best.value);
-  }
+  // The anchor goes exactly where it was clicked. This used to snap onto the
+  // nearest detected tick within ~3pt and copy that tick's value into the
+  // form — which is wrong whenever detection is: on a small stacked panel the
+  // blue lines can sit well off the printed ticks, and the snap then drags a
+  // correct click onto an incorrect position AND fills in a number to match,
+  // so the result looks confirmed while being off. Detection is a hint drawn
+  // for reference, never something that overrides where a human pointed.
+  STATE.cal[STATE.pick] = horizontal ? toPdfX(u, cx) : toPdfY(u, cy);
   STATE.pick = null;
-  $("clickHint").textContent = snapped ? "Snapped to a detected tick." : "Anchor placed.";
+  $("clickHint").textContent = "Anchor placed.";
   syncPos(); draw();
 });
 
@@ -434,7 +426,7 @@ async function show(i) {
   $("pSource").className = "pill " + (src === "none" ? "skip" : "good");
 
   $("calNote").textContent = src === "none"
-    ? "Nothing readable to pre-fill: click a tick on each axis and type its value. Blue lines are detected ticks."
+    ? "Nothing readable to pre-fill: click a tick on each axis and type its value. Blue lines are detected ticks — a reference only; your click lands exactly where you put it."
     : "Pre-filled from the figure — check the four numbers against the picture before saving.";
 
   // pre-fill the form: a previously saved calibration wins, then the guess
