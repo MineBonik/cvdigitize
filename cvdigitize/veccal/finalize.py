@@ -55,6 +55,99 @@ def validate_calibration(cal: Calibration) -> list[str]:
     return problems
 
 
+def _tick_line(ticks: list[dict], *, min_ticks: int = 3, max_ticks: int = 12,
+               fit_tol_frac: float = 0.02):
+    """The straight line a figure's own tick labels imply, or ``None``.
+
+    Returns ``(slope, intercept, value_span)`` mapping position -> value, but
+    only when the ticks are trustworthy enough to judge a human's calibration
+    against. They are rejected when:
+
+    * there are too few to define a line, or so many that they cannot be read
+      axis labels — a real axis carries a handful, and a run of dozens is the
+      tick *detector* enumerating positions while OCR numbers them ``1, 2,
+      3 …``. One corpus panel produced 60 such "ticks" whose values were
+      simply their own index; trusting those would reject a calibration that
+      matches the printed axis exactly.
+    * their values are not monotonic in position, or do not themselves fall on
+      a line. Ticks that disagree with *each other* cannot arbitrate.
+    """
+    pts = [(float(t["pos"]), float(t["value"])) for t in ticks
+           if t.get("value") is not None and t.get("pos") is not None]
+    if not (min_ticks <= len(pts) <= max_ticks):
+        return None
+    pts.sort()
+    pos = np.array([p for p, _ in pts], float)
+    val = np.array([v for _, v in pts], float)
+    if len(np.unique(pos)) != len(pos):
+        return None
+    d = np.diff(val)
+    if not (np.all(d > 0) or np.all(d < 0)):        # not monotonic -> unusable
+        return None
+    span = float(val.max() - val.min())
+    if span <= 0:
+        return None
+    slope, intercept = np.polyfit(pos, val, 1)
+    if np.max(np.abs((slope * pos + intercept) - val)) > fit_tol_frac * span:
+        return None                                  # ticks disagree with themselves
+    return float(slope), float(intercept), span
+
+
+def tick_disagreement(cal: Calibration, unit: dict, *,
+                      tol_frac: float = 0.02) -> list[str]:
+    """Ways this calibration contradicts the figure's own printed tick labels.
+
+    The overlay a human confirms cannot catch this: curves are drawn *through*
+    the calibration being checked, so they land on the ink whether it is right
+    or wrong. Only the ticks are independent evidence. Three real corpus
+    errors were invisible until this ran — a panel calibrated against the
+    right-hand axis (every current exactly 2x too large), one whose anchor was
+    clicked 12 pt away from the tick it meant (every potential shifted by
+    0.075 V), and a stacked sub-panel only ~96 pt wide whose "ticks" were
+    detected 130+ pt outside its own frame — bled in from a neighbouring
+    plot's axis, so the values were current readings masquerading as
+    potential. That last case is why ticks are filtered to the panel's own
+    ``frame_pdf`` below: evidence from a different axis is not evidence.
+
+    Silence is not proof: when the ticks are unreadable this returns nothing,
+    because "I cannot check" must not masquerade as "I checked and it is fine".
+    """
+    problems = []
+    frame = unit.get("frame_pdf")
+    axes = (
+        ("E", unit.get("x_ticks") or [], cal.x1, cal.ex1, cal.x2, cal.ex2,
+         (frame[0], frame[2]) if frame else None),
+        ("j", unit.get("y_ticks") or [], cal.y1, cal.jy1, cal.y2, cal.jy2,
+         (frame[1], frame[3]) if frame else None),
+    )
+    for name, ticks, p1, v1, p2, v2, bounds in axes:
+        if bounds is not None:
+            lo, hi = bounds
+            margin = 0.05 * abs(hi - lo) + 3.0     # a few pt slack for tick marks
+            ticks = [t for t in ticks if t.get("pos") is None
+                    or lo - margin <= t["pos"] <= hi + margin]
+        line = _tick_line(ticks)
+        if line is None or p1 == p2:
+            continue
+        slope, intercept, span = line
+        cal_slope = (v2 - v1) / (p2 - p1)
+        positions = np.array([float(t["pos"]) for t in ticks
+                              if t.get("value") is not None], float)
+        predicted = v1 + (positions - p1) * cal_slope
+        expected = slope * positions + intercept
+        err = float(np.max(np.abs(predicted - expected)))
+        if err > tol_frac * span:
+            ratio = cal_slope / slope if slope else float("inf")
+            hint = (f" (that is {ratio:.3g}x the printed scale — check you used "
+                    f"the correct axis)" if abs(ratio - 1) > 0.25 else
+                    " (check the anchor snapped to the tick you meant)")
+            problems.append(
+                f"the {name} calibration disagrees with the figure's own tick "
+                f"labels by up to {err:.4g} ({100 * err / span:.0f}% of the "
+                f"{span:.4g} they span){hint}")
+    return problems
+
+
 def _resample(data: np.ndarray, n: int, mode: str) -> np.ndarray:
     if n <= 0:
         return data
@@ -76,6 +169,14 @@ def save_panel(unit: dict, calib_payload: dict, out_dir: str, *,
     problems = validate_calibration(cal)
     if problems:
         raise ValueError("Calibration is not usable: " + "; ".join(problems) + ".")
+
+    # NOTE: `tick_disagreement` deliberately does NOT gate saving. It compares
+    # the human's anchors against detected ticks, but the anchors were being
+    # snapped onto those same ticks by the UI — so it largely checked the
+    # detector against itself, and fired on panels where the detector, not the
+    # human, was wrong. It stays available for offline auditing of a finished
+    # run (where a person reviews the flags with the figure in hand); it is not
+    # evidence strong enough to refuse a chemist's reading of their own plot.
 
     os.makedirs(out_dir, exist_ok=True)
     paper = unit.get("paper_meta") or {}

@@ -704,3 +704,110 @@ def test_detect_panels_accepts_a_prerendered_page(tmp_path):
                            image=img, frames_px=frames)
     assert [(p.label, len(p.curves)) for p in plain] == \
            [(p.label, len(p.curves)) for p in reused]
+
+
+# --- calibration vs. the figure's own tick labels ---------------------------
+#
+# These encode two real corpus failures the confirm-by-overlay step could not
+# see, because the overlay draws curves *through* the calibration under test:
+# a panel calibrated against the right-hand axis (every current exactly 2x too
+# large), and an anchor clicked 12 pt from the tick it meant.
+
+def _tk_payload(**kw):
+    base = dict(x1=100.0, ex1=0.0, x2=300.0, ex2=1.0,
+                y1=100.0, jy1=100.0, y2=300.0, jy2=-100.0,
+                x_unit="V", y_unit="uA cm-2", x_label="E", y_label="j")
+    base.update(kw)
+    return base
+
+
+def _tk_ticks(positions, values):
+    return [{"pos": p, "value": v} for p, v in zip(positions, values)]
+
+
+def _tk_unit(x_ticks=(), y_ticks=()):
+    return {"x_ticks": list(x_ticks), "y_ticks": list(y_ticks)}
+
+
+def test_tick_check_accepts_a_calibration_that_matches_the_ticks():
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload())
+    unit = _tk_unit(x_ticks=_tk_ticks([100, 200, 300], [0.0, 0.5, 1.0]),
+                    y_ticks=_tk_ticks([100, 200, 300], [100.0, 0.0, -100.0]))
+    assert tick_disagreement(cal, unit) == []
+
+
+def test_tick_check_catches_the_wrong_axis_scale():
+    """The right-hand-axis error: anchors read +-200 where the ticks say +-100."""
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload(jy1=200.0, jy2=-200.0))
+    unit = _tk_unit(y_ticks=_tk_ticks([100, 200, 300], [100.0, 0.0, -100.0]))
+    problems = tick_disagreement(cal, unit)
+    assert len(problems) == 1
+    assert "2x the printed scale" in problems[0]
+
+
+def test_tick_check_catches_an_anchor_offset():
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload(x1=120.0))   # meant the tick at 100
+    unit = _tk_unit(x_ticks=_tk_ticks([100, 200, 300], [0.0, 0.5, 1.0]))
+    problems = tick_disagreement(cal, unit)
+    assert len(problems) == 1 and problems[0].startswith("the E ")
+
+
+def test_tick_check_distrusts_an_enumerated_tick_run():
+    """A corpus panel produced 60 "ticks" whose values were their own index.
+    Trusting those would reject a calibration matching the printed axis."""
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload(jy1=-0.02, jy2=0.01))
+    unit = _tk_unit(y_ticks=_tk_ticks(list(range(50, 110)),
+                                      [float(i) for i in range(1, 61)]))
+    assert tick_disagreement(cal, unit) == []
+
+
+def test_tick_check_distrusts_ticks_that_disagree_with_each_other():
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload())
+    unit = _tk_unit(x_ticks=_tk_ticks([100, 200, 300], [0.0, 0.9, 1.0]))  # not linear
+    assert tick_disagreement(cal, unit) == []
+
+
+def test_save_panel_does_not_refuse_over_tick_disagreement(tmp_path):
+    """Detected ticks must never veto a human's reading of their own figure.
+
+    The detector is wrong often enough — bleeding ticks in from a neighbouring
+    axis, or enumerating positions instead of reading them — that refusing on
+    its say-so blocks correct work. `tick_disagreement` remains available for
+    auditing a finished run; it is not a gate.
+    """
+    unit = _unit()
+    unit["y_ticks"] = _tk_ticks([0, 5, 10], [100.0, 0.0, -100.0])
+    assert finalize.save_panel(unit, _cal(jy1=200.0, jy2=-200.0), str(tmp_path))["curves"]
+
+
+def test_save_panel_still_accepts_a_calibration_the_ticks_confirm(tmp_path):
+    unit = _unit()
+    unit["y_ticks"] = _tk_ticks([0, 5, 10], [100.0, 0.0, -100.0])
+    assert finalize.save_panel(unit, _cal(), str(tmp_path))["curves"]
+
+
+def test_tick_check_ignores_ticks_outside_the_panels_own_frame():
+    """A stacked sub-panel ~96 pt wide whose "ticks" were detected 130+ pt
+    outside its own frame — bled in from a neighbouring plot's axis. Those
+    values (current, not potential) must not be trusted just because they
+    look like a self-consistent line; the check should abstain, not judge a
+    real calibration against evidence from a different axis."""
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload(x1=90.6, ex1=-100.0, x2=325.2, ex2=-300.0))
+    unit = _tk_unit(x_ticks=_tk_ticks([90.6, 206.6, 325.2], [-100.0, -200.0, -300.0]))
+    unit["frame_pdf"] = [98.667, 382.333, 194.333, 473.0]   # ticks sit far outside this
+    assert tick_disagreement(cal, unit) == []
+
+
+def test_tick_check_still_catches_a_real_error_within_the_frame():
+    from cvdigitize.veccal.finalize import calibration_from_payload, tick_disagreement
+    cal = calibration_from_payload(_tk_payload(jy1=200.0, jy2=-200.0))
+    unit = _tk_unit(y_ticks=_tk_ticks([100, 200, 300], [100.0, 0.0, -100.0]))
+    unit["frame_pdf"] = [0.0, 90.0, 400.0, 310.0]           # ticks comfortably inside
+    problems = tick_disagreement(cal, unit)
+    assert len(problems) == 1 and "2x the printed scale" in problems[0]
