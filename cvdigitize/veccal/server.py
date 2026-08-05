@@ -301,7 +301,7 @@ def run(source_folder: str, work_dir: str, out_dir: str, *, port: int = 8756,
     httpd = make_server(work_dir, out_dir, port=port,
                         resample=resample, resample_mode=resample_mode)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
-    print(f"\nCV vector calibration → {url}")
+    print(f"\nCV vector calibration -> {url}")
     print(f"Curves are written to {out_dir} as you save. Ctrl+C to stop.")
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

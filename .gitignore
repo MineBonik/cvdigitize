@@ -11,6 +11,8 @@ venv/
 
 # Generated outputs (kept out of history; regenerate with vector-calibrate)
 data/out/
+out/
+pages/
 
 # Local data from now-removed raster/benchmark tooling (nothing regenerates
 # these; harmless leftovers, just not part of the repo)

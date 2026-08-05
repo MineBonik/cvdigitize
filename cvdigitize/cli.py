@@ -103,7 +103,7 @@ def cmd_info(args) -> int:
                   f"loop score {score:.2f}")
 
     if not total_panels:
-        print("  none — vector content is present, but nothing scored as a CV.")
+        print("  none - vector content is present, but nothing scored as a CV.")
         print(f"  (lower the bar with --cv-threshold, currently {args.cv_threshold})")
         return 1
 
@@ -195,7 +195,32 @@ def _with_implicit_command(argv: list[str]) -> list[str]:
     return ["info", *argv]
 
 
+def _make_console_safe() -> None:
+    """Never let a console codepage turn a finished job into a crash.
+
+    Windows consoles default to a legacy codepage (cp1251 on this machine),
+    which cannot encode characters this tool legitimately prints: an arrow in
+    the ready banner, or a ``µ``/``⁻²`` carried straight out of a paper's axis
+    label into a status line. By the time anything is printed the scan is
+    already done, so a UnicodeEncodeError would throw away real work over a
+    decorative character. Prefer UTF-8; fall back to replacing whatever the
+    console cannot represent.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:          # redirected to something exotic
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv=None) -> int:
+    _make_console_safe()
     argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(_with_implicit_command(argv))
     return args.func(args)
