@@ -39,7 +39,6 @@ def cmd_info(args) -> int:
     of page rendering, since "will this paper yield anything?" is the whole
     reason to run this command. ``--quick`` skips it.
     """
-    from .postprocess import dedupe, keep_main_components, loop_metrics, order_curve
     from .veccal.scan import candidate_pages
 
     pdf = args.pdf
@@ -47,7 +46,16 @@ def cmd_info(args) -> int:
         print(f"Not a file: {pdf}")
         return 2
 
-    infos = classify_pdf(pdf)
+    # "Can this tool use this file?" must answer, not traceback, on the most
+    # likely no: a truncated, encrypted or mis-named PDF. Every sibling path
+    # already guards this (candidate_pages, and the per-paper scan worker so
+    # one bad paper cannot abort a folder).
+    try:
+        infos = classify_pdf(pdf)
+    except Exception as exc:
+        print(f"Could not read {pdf}: {type(exc).__name__}: {exc}")
+        print("Not a readable PDF (truncated, encrypted, or not a PDF at all).")
+        return 2
     candidates = candidate_pages(pdf)
 
     print(f"{pdf}  ({len(infos)} page{'s' if len(infos) != 1 else ''})\n")
@@ -70,36 +78,20 @@ def cmd_info(args) -> int:
         print("(--quick: skipped panel detection)")
         return 0
 
-    from .vector_extract import detect_panels
-    from .veccal.scan import MIN_PANEL_H_PT, MIN_PANEL_W_PT
+    from .veccal.scan import gated_panels
 
     print("\nCV panels found (same detection vector-calibrate uses):")
     total_panels = total_curves = 0
     for page in candidates:
-        try:
-            panels = detect_panels(pdf, page, min_points=60, min_curve_points=60)
-        except Exception as exc:
-            print(f"  page {page:>3}: detection failed ({type(exc).__name__})")
-            continue
-        keep = []
-        for p in panels:
-            # Same two gates the scan applies, in the same order: a plot too
-            # small to read tick labels off is not a work unit, then loop score.
-            x0, y0, x1, y1 = p.frame_pdf
-            if (x1 - x0) < MIN_PANEL_W_PT or (y1 - y0) < MIN_PANEL_H_PT:
-                continue
-            score = max((loop_metrics(dedupe(order_curve(
-                keep_main_components(c.polylines))))["loopiness"]
-                for c in p.curves), default=0.0)
-            if score >= args.cv_threshold:
-                keep.append((p, score))
-        if not keep:
-            continue
-        for p, score in keep:
+        # gated_panels renders the page and detects frames once, then applies
+        # the scan's own gates -- calling it is what makes "exactly what a scan
+        # would find" true rather than aspirational.
+        for p, score, n_curves in gated_panels(pdf, page,
+                                               cv_threshold=args.cv_threshold):
             total_panels += 1
-            total_curves += len(p.curves)
+            total_curves += n_curves
             label = f"panel {p.label}" if p.label else "(single plot)"
-            print(f"  page {page:>3}: {label:<14} {len(p.curves)} curve(s), "
+            print(f"  page {page:>3}: {label:<14} {n_curves} curve(s), "
                   f"loop score {score:.2f}")
 
     if not total_panels:
@@ -178,7 +170,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-_KNOWN_COMMANDS = {"info", "vector-calibrate", "-h", "--help"}
+def _command_names(parser: argparse.ArgumentParser) -> set[str]:
+    """Every registered subcommand, read back off the parser.
+
+    Derived rather than hand-listed: a duplicated list silently mis-routes any
+    command added later ("cvdigitize export ..." would be treated as a bare
+    path and reported as "Not a file: export") instead of failing loudly.
+    """
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return set(action.choices)
+    return set()
 
 
 def _with_implicit_command(argv: list[str]) -> list[str]:
@@ -188,7 +190,7 @@ def _with_implicit_command(argv: list[str]) -> list[str]:
     right command is unambiguous from what the path *is* — there is exactly one
     thing to do with a folder and one with a single file.
     """
-    if not argv or argv[0] in _KNOWN_COMMANDS or argv[0].startswith("-"):
+    if not argv or argv[0].startswith("-") or argv[0] in _command_names(build_parser()):
         return argv
     if os.path.isdir(argv[0]):
         return ["vector-calibrate", "--in", *argv]
