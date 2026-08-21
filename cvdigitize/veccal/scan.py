@@ -21,7 +21,8 @@ Geometry lives in two spaces:
 
 Each unit ships with a pre-filled calibration guess whenever the page's tick
 labels are real text (``autocalib.match_calibration``), plus every tick position
-we could detect as click-to-snap targets for when the guess is wrong or absent.
+we could detect, which the browser draws as labelled reference lines. Those are
+shown, never applied: clicks do not snap to them and they never fill the form.
 """
 from __future__ import annotations
 
@@ -151,7 +152,7 @@ class PanelUnit:
     curves: list = field(default_factory=list)
     calib_guess: dict | None = None      # pre-filled Calibration, PDF-pt anchors
     calib_source: str = "none"           # "auto-text" | "none"
-    x_ticks: list = field(default_factory=list)   # snap targets, PDF pt + value
+    x_ticks: list = field(default_factory=list)   # reference lines, PDF pt + value
     y_ticks: list = field(default_factory=list)
     axis_titles: list = field(default_factory=list)   # [x_title, y_title]
     #: Units read off the axis titles, "" where the figure did not say. Never
@@ -169,8 +170,8 @@ def _ticks_from_labels(label_sets, orientation: str,
     """Tick labels for the axis of ``frame_pdf``, as {pos, value} in PDF points.
 
     Picks the label row/column closest to the relevant frame edge that also
-    spans it, then returns its individual labels so the browser can offer each
-    printed number as a snap target.
+    spans it, then returns its individual labels so the browser can draw each
+    printed number beside its tick for the user to read off.
     """
     x0, y0, x1, y1 = frame_pdf
     best, best_gap = None, 1e9
@@ -384,6 +385,53 @@ MIN_PANEL_W_PT = 70.0
 MIN_PANEL_H_PT = 55.0
 
 
+def gated_panels(pdf: str, page: int, *, cv_threshold: float = 0.08,
+                 min_points: int = 60, image=None, frames_px=None):
+    """Panels this page contributes to a scan: ``[(panel, score, n_curves)]``.
+
+    The single source of truth for "would ``vector-calibrate`` offer this
+    panel?". ``cvdigitize info`` promises to report exactly what a scan finds,
+    and the only way to keep that promise is for both to run this function
+    rather than each re-deriving the gates.
+
+    Three gates in cost order: panel size (free), then CV-likeness by loop
+    score (calibration-invariant, drops schematics and Tafel plots), then
+    whether any curve survives ordering with two or more points -- a panel
+    whose every curve collapses yields no files and must not be counted.
+
+    ``image``/``frames_px`` let a caller that has already rendered the page
+    pass its work in; rendering and frame detection are the expensive steps.
+    """
+    if image is None or frames_px is None:
+        try:
+            image = render_page(pdf, page, zoom=ZOOM)
+            frames_px = detect_all_frames(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY))
+        except Exception:
+            return []
+    try:
+        panels = detect_panels(pdf, page, min_points=min_points,
+                               min_curve_points=max(60, min_points),
+                               image=image, frames_px=frames_px)
+    except Exception:
+        return []
+
+    kept = []
+    for p in panels:
+        x0, y0, x1, y1 = p.frame_pdf
+        if (x1 - x0) < MIN_PANEL_W_PT or (y1 - y0) < MIN_PANEL_H_PT:
+            continue
+        loops = [dedupe(order_curve(keep_main_components(c.polylines)))
+                 for c in p.curves]
+        score = max((loop_metrics(l)["loopiness"] for l in loops), default=0.0)
+        if score < cv_threshold:
+            continue
+        n_curves = sum(1 for l in loops if len(l) >= 2)
+        if not n_curves:
+            continue
+        kept.append((p, score, n_curves))
+    return kept
+
+
 def candidate_pages(pdf: str) -> list[int]:
     """Pages of ``pdf`` that plausibly hold a vector figure.
 
@@ -454,19 +502,10 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
         if not panels:
             continue
 
-        # Two gates, both before any rendering or file I/O. Size first because
-        # it is free; then CV-likeness, whose loop score is calibration-
-        # invariant, to drop schematics, Tafel plots and micrographs.
-        keep = []
-        for p in panels:
-            x0, y0, x1, y1 = p.frame_pdf
-            if (x1 - x0) < MIN_PANEL_W_PT or (y1 - y0) < MIN_PANEL_H_PT:
-                continue
-            score = max((loop_metrics(dedupe(order_curve(
-                keep_main_components(c.polylines))))["loopiness"]
-                for c in p.curves), default=0.0)
-            if score >= cv_threshold:
-                keep.append(p)
+        keep = [p for p, _score, _n in
+                gated_panels(pdf, page, cv_threshold=cv_threshold,
+                             min_points=min_points, image=img,
+                             frames_px=frames_px)]
         if not keep:
             continue
 
@@ -522,8 +561,8 @@ def scan_pdf(pdf: str, work_dir: str, *, cv_threshold: float = 0.08,
             #  2. detected tick marks + OCR of the outer labels -> the path for
             #     figures whose text is outlined (most of this corpus), where
             #     the text layer holds nothing to fit.
-            # Either way every detected tick becomes a click-to-snap target so
-            # a wrong guess is a click plus a number, not a hunt for a pixel.
+            # Either way every detected tick is drawn with its value, so a
+            # wrong guess is a click plus a number, not a hunt for a pixel.
             if label_sets and bbox:
                 x_ticks = _ticks_from_labels(label_sets, "x", p.frame_pdf)
                 y_ticks = _ticks_from_labels(label_sets, "y", p.frame_pdf)
