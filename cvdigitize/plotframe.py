@@ -249,9 +249,17 @@ def detect_axis_ticks(gray: np.ndarray, frame_px: tuple[int, int, int, int], *,
     x_positions = _xscan(bottom + 2, bottom + 2 + tick_band)
     if len(x_positions) < 2:
         x_positions = _regular_subset(
-            _majors_only(_regular_subset(_xscan(bottom - 2 - tick_band, bottom - 2)), "x"))
+            _majors_only(_regular_subset(
+                _xscan(max(0, bottom - 2 - tick_band), max(0, bottom - 2))), "x"))
 
-    y_positions = _yscan(max(0, left - 2 - tick_band), left - 2)
+    # Clamp the stop: a frame flush against the left edge gives left < 2, and a
+    # bare `left - 2` is then a *negative* index, so the slice runs from the far
+    # side and hands back the whole plot interior instead of a 6px band. In
+    # practice the frame's own vertical borders darken every row of that band,
+    # so it collapses to one cluster and the `< 2` fallback still rescues it --
+    # no output change was reproducible. Clamped anyway: the expression means
+    # something other than what it says, and the rescue is incidental.
+    y_positions = _yscan(max(0, left - 2 - tick_band), max(0, left - 2))
     if len(y_positions) < 2:
         y_positions = _regular_subset(
             _majors_only(_regular_subset(_yscan(left + 2, left + 2 + tick_band)), "y"))
@@ -283,7 +291,7 @@ def crop_tick_labels(image: np.ndarray, frame_px: tuple[int, int, int, int],
 
     def _clip(y0, y1, x0, x1):
         y0, y1 = max(0, y0), min(h, y1)
-        x0, x1 = max(0, w and x0), min(w, x1)
+        x0, x1 = max(0, x0), min(w, x1)
         return image[y0:y1, x0:x1] if (y1 > y0 and x1 > x0) else None
 
     xt = ticks.get("x_ticks", [])

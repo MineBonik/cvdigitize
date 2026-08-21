@@ -262,7 +262,16 @@ def run(source_folder: str, work_dir: str, out_dir: str, *, port: int = 8756,
         open_browser: bool = True, resample: int = 1000,
         resample_mode: str = "arclength", workers: int | None = None) -> int:
     """Scan if needed, then serve the calibration UI until interrupted."""
-    if rescan or not os.path.exists(index_path(work_dir)):
+    have_index = os.path.exists(index_path(work_dir))
+    if rescan or not have_index:
+        if not source_folder and have_index:
+            # `--rescan` alone is the documented way to re-detect an existing
+            # scan ("omit --in afterwards to resume"), and the index already
+            # records the folder it was built from -- refusing here would be
+            # false on both counts.
+            source_folder = load_index(work_dir).get("source_folder") or ""
+            if source_folder:
+                print(f"Rescanning {source_folder} (from the existing scan).")
         if not source_folder:
             print("No scan found in the work directory and no --in folder given.")
             return 2

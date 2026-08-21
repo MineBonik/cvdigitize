@@ -1,7 +1,0 @@
-# Optional ML-tracer spike deps (scripts/experimental/ml_tracer.py) — NOT part of
-# the core tool. cvdigitize / trace_assist / trace_guided work with zero ML deps;
-# only install this if you want to try the experimental instance-embedding tracer.
-#
-# Install (CPU-only, no CUDA needed):
-#   .venv\Scripts\python.exe -m pip install -r requirements-ml.txt
-torch>=2.4,<3.0

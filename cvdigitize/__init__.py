@@ -1,9 +1,13 @@
-"""cvdigitize — automated digitization of Cyclic Voltammetry curves from PDFs.
+"""cvdigitize — digitize Cyclic Voltammetry curves from native-vector PDFs.
 
-Pipeline (see plan): ingest/classify -> extract (vector/raster) -> digitize ->
-post-process (loop ordering, resample) -> package (CSV + frictionless JSON + YAML).
+Pipeline: ingest/classify -> extract curves from the PDF's own path geometry ->
+post-process (loop ordering, dedupe, resample) -> human-confirmed axis
+calibration -> package (CSV + frictionless JSON + echemdb YAML).
 
-Currently implemented: M0 vector curve extraction & color separation.
+Vector only, by design: for a vector figure the curve points are exact, so
+there is no tracing and no resolution limit. Raster figures need pixel
+tracing, a fundamentally fuzzier problem, and that pipeline is not part of
+this package — ``cvdigitize info`` reports when a paper's figures are raster.
 """
 
 __version__ = "0.0.1"
