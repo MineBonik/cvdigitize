@@ -50,8 +50,14 @@ scanned in parallel; ~3 minutes for 52 papers on 4 cores.
 **2 — Confirm the axes (you, per panel).** Each panel is shown as the original
 figure with the extracted curves drawn on top. Where the tool could read the
 axis numbers — real text tick labels, or OCR of detected tick marks — the
-calibration arrives pre-filled for you to check. Where it couldn't, click a tick
-on each axis (clicks snap to detected ticks) and type its value.
+calibration arrives pre-filled for you to check. Where it couldn't, nothing is
+placed or typed for you: click a tick on each axis and type its value.
+
+Your click lands exactly where you put it. Detected ticks are drawn as blue
+reference lines with their values, but they never move an anchor and never fill
+a box — tick detection is wrong often enough (latching onto a neighbouring
+plot's axis, or numbering positions `1, 2, 3…` instead of reading them) that
+letting it act would quietly produce a complete, plausible, wrong calibration.
 
 Calibration is **per panel, not per curve**: every curve inside a panel shares
 its axes, so a seven-curve figure is one calibration, not seven.

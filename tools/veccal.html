@@ -252,17 +252,32 @@ function draw() {
     g.strokeStyle = "rgba(0,255,140,0.9)"; g.lineWidth = 0.8; g.stroke();
   }
 
-  // detected ticks, drawn purely as a visual reference — clicks do not snap
+  // Detected ticks: a visual reference only. Clicks do not snap to them and
+  // they never fill the form, so any value one carries is shown here or it is
+  // not shown at all — otherwise a correctly-read number would be invisible
+  // and the user would re-read every one off the figure by hand.
   g.font = "11px ui-monospace, monospace";
+  const tickLabel = (t, x, y) => {
+    if (t.value == null) return;
+    const s = String(+(+t.value).toFixed(6));
+    g.fillStyle = "rgba(255,255,255,.85)";
+    g.fillRect(x - 1, y - 10, g.measureText(s).width + 4, 12);
+    g.fillStyle = "rgba(31,86,208,.95)";
+    g.fillText(s, x + 1, y);
+  };
   for (const t of u.x_ticks || []) {
+    if (t.pos == null) continue;
     const x = toCropX(u, t.pos);
     g.strokeStyle = "rgba(31,86,208,.45)"; g.lineWidth = 1;
     g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    tickLabel(t, x, H - 4);
   }
   for (const t of u.y_ticks || []) {
+    if (t.pos == null) continue;
     const y = toCropY(u, t.pos);
     g.strokeStyle = "rgba(31,86,208,.45)"; g.lineWidth = 1;
     g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    tickLabel(t, 2, y - 2);
   }
 
   // the two anchors per axis
@@ -439,13 +454,15 @@ async function show(i) {
     $("xlab").value = g.x_label || "E"; $("ylab").value = g.y_label || "j";
     setUnits(u);
   } else {
+    // No guess means exactly that: nothing is placed and nothing is typed in.
+    // This used to seed both anchor positions and values from the outermost
+    // detected ticks while the panel still read "no pre-fill" — so a detector
+    // that had latched onto a neighbouring plot's axis silently produced a
+    // complete, plausible-looking calibration the user had no cue to check.
+    // One real panel came out anchored to -100/-300 that way, values that
+    // belonged to a different figure entirely. The detected ticks are drawn on
+    // the canvas with their values instead, where they inform without acting.
     for (const k of ["ex1", "ex2", "jy1", "jy2"]) $(k).value = "";
-    // no guess: offer the outermost detected ticks as the anchor positions
-    const xt = u.x_ticks || [], yt = u.y_ticks || [];
-    if (xt.length >= 2) { STATE.cal.x1 = xt[0].pos; STATE.cal.x2 = xt[xt.length - 1].pos; }
-    if (yt.length >= 2) { STATE.cal.y1 = yt[0].pos; STATE.cal.y2 = yt[yt.length - 1].pos; }
-    if (xt.length >= 2 && xt[0].value != null) { $("ex1").value = xt[0].value; $("ex2").value = xt[xt.length - 1].value; }
-    if (yt.length >= 2 && yt[0].value != null) { $("jy1").value = yt[0].value; $("jy2").value = yt[yt.length - 1].value; }
     setUnits(u);
   }
   $("scanRate").value = (u.figure_meta && u.figure_meta.scanRate) || "";
