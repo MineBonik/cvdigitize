@@ -1,0 +1,27 @@
+[workspace]
+name = "cvdigitize"
+description = "Digitize Cyclic Voltammetry curves from scientific PDFs into echemdb datapackages"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+# Mirrors requirements.txt. Kept in sync by hand -- requirements.txt stays as
+# the pip route for anyone not using pixi.
+[dependencies]
+python = "3.12.*"
+pymupdf = ">=1.28"        # PDF vector + text-layer extraction (imported as fitz)
+lxml = ">=6.0"            # SVG/XML handling
+numpy = ">=2.0"
+scipy = ">=1.13"          # nearest-neighbour metrics, interpolation
+matplotlib-base = ">=3.9" # overlays and reports (Agg only, no GUI toolkit)
+py-opencv = ">=4.9"       # raster frame/tick detection, colour masks
+scikit-image = ">=0.22"   # curve skeletonization
+pytest = ">=8"
+
+[tasks]
+# Run the CLI:  pixi run cvdigitize info data/in/rizo_2025_analysis_351.pdf
+cvdigitize = "python -m cvdigitize"
+# --basetemp keeps pytest's tmp dirs on the repo's own drive: qc.py builds
+# relative links from an output dir back to tools/trace_assist.html, and
+# os.path.relpath raises across Windows drives (repo on D:, %TEMP% on C:).
+test = "pytest -q --basetemp=.pytest_tmp"
+studio = "python -m cvdigitize studio"
