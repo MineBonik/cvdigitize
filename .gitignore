@@ -24,10 +24,20 @@ data/workspace/
 Thumbs.db
 .DS_Store
 
-# Copyrighted source papers - not part of this repo
+# Copyrighted source papers - never part of this repo. Most journal PDFs are
+# not open access (the Rizo 2025 paper is not), so no published paper may be
+# committed anywhere, including the small test set in data/in/. The one
+# exception is synthetic_cv.pdf, which the tool's own tests generate.
 data/papers_additional_after_request/
 data/literature_Vladislav/
 data/literature_Vladislav.zip
+data/in/*.pdf
+!data/in/synthetic_cv.pdf
+
+# svgdigitizer reference files import the paper's figure page into Inkscape
+# as vector paths, so each SVG carries the copyrighted figure itself -- not
+# just the trace. The traces alone are the .csv/.json beside them; keep those.
+data/reference/*.svg
 
 # Claude Code local dev config (launch.json etc.)
 .claude/
